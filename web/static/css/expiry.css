@@ -1,0 +1,350 @@
+.ssr-expiry-panel {
+  display: grid;
+  gap: 10px;
+  margin: 10px 12px 14px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #172033;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+}
+
+.dark .ssr-expiry-panel {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(30, 41, 59, 0.96);
+  color: #e5edf7;
+  box-shadow: none;
+}
+
+.ssr-expiry-panel[hidden] {
+  display: none;
+}
+
+.ssr-expiry-header {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.ssr-expiry-title-wrap {
+  min-width: 0;
+}
+
+.ssr-expiry-title {
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.ssr-expiry-subtitle {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dark .ssr-expiry-subtitle {
+  color: #9fb0c6;
+}
+
+.ssr-expiry-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.ssr-expiry-metric {
+  display: inline-grid;
+  min-width: 54px;
+  padding: 5px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 6px;
+  background: rgba(248, 250, 252, 0.82);
+  text-align: center;
+}
+
+.dark .ssr-expiry-metric {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.ssr-expiry-metric-value {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.ssr-expiry-metric-label {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.1;
+}
+
+.dark .ssr-expiry-metric-label {
+  color: #aab8ca;
+}
+
+.ssr-expiry-metric-danger {
+  border-color: rgba(220, 38, 38, 0.4);
+  background: rgba(254, 226, 226, 0.9);
+  color: #991b1b;
+}
+
+.ssr-expiry-metric-warning {
+  border-color: rgba(217, 119, 6, 0.4);
+  background: rgba(254, 243, 199, 0.88);
+  color: #92400e;
+}
+
+.ssr-expiry-metric-soon {
+  border-color: rgba(37, 99, 235, 0.35);
+  background: rgba(219, 234, 254, 0.82);
+  color: #1d4ed8;
+}
+
+.ssr-expiry-metric-missing {
+  border-color: rgba(100, 116, 139, 0.38);
+  background: rgba(241, 245, 249, 0.9);
+  color: #475569;
+}
+
+.ssr-expiry-metric-auto {
+  border-color: rgba(5, 150, 105, 0.35);
+  background: rgba(209, 250, 229, 0.82);
+  color: #047857;
+}
+
+.dark .ssr-expiry-metric-danger,
+.dark .ssr-expiry-metric-warning,
+.dark .ssr-expiry-metric-soon,
+.dark .ssr-expiry-metric-missing,
+.dark .ssr-expiry-metric-auto {
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.ssr-expiry-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: stretch;
+}
+
+.ssr-expiry-quiet {
+  padding: 6px 8px;
+  border: 1px dashed rgba(100, 116, 139, 0.35);
+  border-radius: 6px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.dark .ssr-expiry-quiet {
+  color: #aab8ca;
+}
+
+.ssr-expiry-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid rgba(100, 116, 139, 0.28);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: rgba(248, 250, 252, 0.96);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.dark .ssr-expiry-chip {
+  background: rgba(15, 23, 42, 0.28);
+  border-color: rgba(148, 163, 184, 0.24);
+}
+
+.ssr-expiry-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 800;
+}
+
+.ssr-expiry-date,
+.ssr-expiry-label,
+.ssr-expiry-renewal,
+.ssr-expiry-billing {
+  white-space: nowrap;
+}
+
+.ssr-expiry-renewal,
+.ssr-expiry-billing {
+  color: #64748b;
+}
+
+.dark .ssr-expiry-renewal,
+.dark .ssr-expiry-billing {
+  color: #aab8ca;
+}
+
+.ssr-expiry-normal {
+  border-left-color: #16a34a;
+}
+
+.ssr-expiry-warning {
+  border-left-color: #d97706;
+}
+
+.ssr-expiry-expired,
+.ssr-expiry-unknown {
+  border-left-color: #dc2626;
+}
+
+.ssr-expiry-missing {
+  border-left-color: #94a3b8;
+}
+
+.ssr-expiry-permanent {
+  border-left-color: #0284c7;
+}
+
+.ssr-row-expiry {
+  display: flex;
+  gap: 5px;
+  justify-content: center;
+  align-items: center;
+  max-width: 100%;
+  margin: 2px auto 0;
+  padding: 1px 4px;
+  border-left: 3px solid #16a34a;
+  border-radius: 4px;
+  color: #475569;
+  font-size: 10px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.dark .ssr-row-expiry {
+  color: #cbd5e1;
+}
+
+.ssr-row-expiry.ssr-expiry-warning {
+  border-left-color: #d97706;
+  color: #92400e;
+}
+
+.ssr-row-expiry.ssr-expiry-expired,
+.ssr-row-expiry.ssr-expiry-unknown {
+  border-left-color: #dc2626;
+  color: #b91c1c;
+}
+
+.ssr-row-expiry.ssr-expiry-missing {
+  border-left-color: #94a3b8;
+  color: #64748b;
+}
+
+.dark .ssr-row-expiry.ssr-expiry-warning {
+  color: #fbbf24;
+}
+
+.dark .ssr-row-expiry.ssr-expiry-expired,
+.dark .ssr-row-expiry.ssr-expiry-unknown {
+  color: #fca5a5;
+}
+
+.dark .ssr-row-expiry.ssr-expiry-missing {
+  color: #cbd5e1;
+}
+
+.ssr-row-expiry-date,
+.ssr-row-expiry-label,
+.ssr-row-expiry-auto {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ssr-row-expiry-auto {
+  color: #047857;
+  font-weight: 700;
+}
+
+.dark .ssr-row-expiry-auto {
+  color: #6ee7b7;
+}
+
+.ssr-expanded-expiry {
+  grid-column: 2 / 13;
+  margin-top: 2px;
+  overflow: hidden;
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dark .ssr-expanded-expiry {
+  color: #cbd5e1;
+}
+
+.ssr-expanded-expiry.ssr-expiry-warning {
+  color: #b45309;
+}
+
+.ssr-expanded-expiry.ssr-expiry-expired,
+.ssr-expanded-expiry.ssr-expiry-unknown {
+  color: #b91c1c;
+}
+
+.ssr-expanded-expiry.ssr-expiry-missing {
+  color: #64748b;
+}
+
+.dark .ssr-expanded-expiry.ssr-expiry-warning {
+  color: #fbbf24;
+}
+
+.dark .ssr-expanded-expiry.ssr-expiry-expired,
+.dark .ssr-expanded-expiry.ssr-expiry-unknown {
+  color: #fca5a5;
+}
+
+.dark .ssr-expanded-expiry.ssr-expiry-missing {
+  color: #cbd5e1;
+}
+
+@media (max-width: 720px) {
+  .ssr-expiry-panel {
+    margin: 8px 8px 12px;
+    padding: 10px;
+  }
+
+  .ssr-expiry-header {
+    grid-template-columns: 1fr;
+  }
+
+  .ssr-expiry-metrics {
+    justify-content: flex-start;
+  }
+
+  .ssr-expiry-chip {
+    width: 100%;
+  }
+
+  .ssr-expiry-name {
+    max-width: 42vw;
+  }
+
+  .ssr-expiry-renewal,
+  .ssr-expiry-billing {
+    display: none;
+  }
+}

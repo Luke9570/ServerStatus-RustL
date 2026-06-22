@@ -21,6 +21,8 @@ fn main() {
     }
     println!("cargo:rustc-env=APP_VERSION={app_version}");
 
+    #[cfg(target_env = "msvc")]
+    std::env::set_var("PROTOC", protoc_bin_vendored_win32::protoc_bin_path());
     #[cfg(not(target_env = "msvc"))]
     std::env::set_var("PROTOC", protobuf_src::protoc());
 

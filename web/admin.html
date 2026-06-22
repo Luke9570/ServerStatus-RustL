@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-Hans">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>ServerStatus Admin</title>
+  <link href="/static/css/admin.css" rel="stylesheet">
+  <script defer src="/static/js/admin.js"></script>
+</head>
+
+<body>
+  <main class="admin-shell">
+    <section id="login" class="login-panel">
+      <div class="login-copy">
+        <h1>ServerStatus</h1>
+        <p>后台配置入口</p>
+      </div>
+      <form id="login-form" class="login-form" autocomplete="on">
+        <label>
+          用户名
+          <input id="username" name="username" autocomplete="username" required>
+        </label>
+        <label>
+          密码
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button id="login-submit" type="submit">登录</button>
+        <output id="login-message" role="status"></output>
+      </form>
+    </section>
+
+    <section id="dashboard" class="dashboard" hidden>
+      <header class="topbar">
+        <div>
+          <h1>节点配置</h1>
+          <p id="summary">-</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="refresh" class="secondary" type="button">刷新</button>
+          <button id="logout" class="secondary" type="button">退出</button>
+          <button id="save" type="button">保存</button>
+        </div>
+      </header>
+
+      <nav class="tabs" aria-label="后台配置">
+        <button class="tab active" data-tab="nodes" type="button">节点</button>
+        <button class="tab" data-tab="groups" type="button">分组</button>
+        <button class="tab" data-tab="notify" type="button">通知</button>
+      </nav>
+
+      <section id="tab-nodes" class="tab-page active">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>节点</th>
+                <th>状态</th>
+                <th>权重</th>
+                <th>到期日</th>
+                <th>自动续期</th>
+                <th>周期</th>
+                <th>金额</th>
+                <th>提醒</th>
+              </tr>
+            </thead>
+            <tbody id="node-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-groups" class="tab-page">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>分组</th>
+                <th>权重</th>
+                <th>到期日</th>
+                <th>自动续期</th>
+                <th>周期</th>
+                <th>金额</th>
+                <th>提醒</th>
+              </tr>
+            </thead>
+            <tbody id="group-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-notify" class="tab-page">
+        <div class="settings-grid">
+          <section class="settings-block">
+            <h2>到期提醒</h2>
+            <label class="switch-row">
+              <input id="expire-enabled" type="checkbox">
+              启用
+            </label>
+            <label>
+              提醒阈值
+              <input id="expire-days" placeholder="30,14,7,3,1,0">
+            </label>
+            <label>
+              重复间隔秒
+              <input id="expire-interval" type="number" min="60" step="60">
+            </label>
+          </section>
+
+          <section class="settings-block">
+            <h2>Telegram</h2>
+            <label class="switch-row">
+              <input id="tg-enabled" type="checkbox">
+              启用
+            </label>
+            <label>
+              Bot Token
+              <input id="tg-token" autocomplete="off">
+            </label>
+            <label>
+              Chat ID
+              <input id="tg-chat" autocomplete="off">
+            </label>
+            <label>
+              标题
+              <input id="tg-title">
+            </label>
+            <label>
+              到期模板
+              <textarea id="tg-expire" rows="5"></textarea>
+            </label>
+          </section>
+
+          <section class="settings-block">
+            <h2>Bark</h2>
+            <label class="switch-row">
+              <input id="bark-enabled" type="checkbox">
+              启用
+            </label>
+            <label>
+              Server
+              <input id="bark-server" placeholder="https://api.day.app">
+            </label>
+            <label>
+              Device Key
+              <input id="bark-key" autocomplete="off">
+            </label>
+            <label>
+              标题
+              <input id="bark-title">
+            </label>
+            <label>
+              分组
+              <input id="bark-group">
+            </label>
+            <label>
+              到期模板
+              <textarea id="bark-expire" rows="5"></textarea>
+            </label>
+          </section>
+        </div>
+      </section>
+
+      <output id="save-message" role="status"></output>
+    </section>
+  </main>
+</body>
+
+</html>

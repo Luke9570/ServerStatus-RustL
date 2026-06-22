@@ -12,7 +12,11 @@ use crate::notifier::{get_tag, Event, HostStat, NOTIFIER_HANDLE};
 
 const KIND: &str = "tgbot";
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+fn default_expire_tpl() -> String {
+    "{{config.title}}\n<pre>{{host.location}} {{host.name}} {{host.expire.label}}</pre>\n<pre>Expire: {{host.expire.date}}</pre>".to_string()
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub enabled: bool,
     pub bot_token: String,
@@ -21,25 +25,27 @@ pub struct Config {
     pub online_tpl: String,
     pub offline_tpl: String,
     pub custom_tpl: String,
+    #[serde(default = "default_expire_tpl")]
+    pub expire_tpl: String,
 }
 
 pub struct TGBot {
     config: &'static Config,
-    tg_url: String,
     http_client: reqwest::Client,
 }
 
 impl TGBot {
     pub fn new(cfg: &'static Config) -> Self {
+        let config = crate::admin::effective_tgbot_config(cfg);
         let o = Self {
             config: cfg,
-            tg_url: format!("https://api.telegram.org/bot{}/sendMessage", &cfg.bot_token),
             http_client: reqwest::Client::new(),
         };
 
-        add_template(KIND, get_tag(&Event::NodeUp), o.config.online_tpl.clone());
-        add_template(KIND, get_tag(&Event::NodeDown), o.config.offline_tpl.clone());
-        add_template(KIND, get_tag(&Event::Custom), o.config.custom_tpl.clone());
+        add_template(KIND, get_tag(&Event::NodeUp), config.online_tpl);
+        add_template(KIND, get_tag(&Event::NodeDown), config.offline_tpl);
+        add_template(KIND, get_tag(&Event::Custom), config.custom_tpl);
+        add_template(KIND, get_tag(&Event::Expire), config.expire_tpl);
 
         o
     }
@@ -51,12 +57,13 @@ impl crate::notifier::Notifier for TGBot {
     }
 
     fn send_notify(&self, html_content: String) -> Result<()> {
+        let config = crate::admin::effective_tgbot_config(self.config);
         let mut data = HashMap::new();
-        data.insert("chat_id", self.config.chat_id.clone());
+        data.insert("chat_id", config.chat_id.clone());
         data.insert("parse_mode", "HTML".to_string());
         data.insert("text", html_content);
 
-        let tg_url = self.tg_url.clone();
+        let tg_url = format!("https://api.telegram.org/bot{}/sendMessage", config.bot_token);
         let handle = NOTIFIER_HANDLE.lock().unwrap().as_ref().unwrap().clone();
         let http_client = self.http_client.clone();
         handle.spawn(async move {
@@ -80,18 +87,23 @@ impl crate::notifier::Notifier for TGBot {
     }
 
     fn notify(&self, e: &Event, stat: &HostStat) -> Result<()> {
+        let config = crate::admin::effective_tgbot_config(self.config);
         render_template(
             self.kind(),
             get_tag(e),
-            context!(host => stat, config => self.config, ip_info => stat.ip_info, sys_info => stat.sys_info),
+            context!(host => stat, config => &config, ip_info => stat.ip_info, sys_info => stat.sys_info),
             true,
         )
         .map(|content| match *e {
-            Event::NodeUp | Event::NodeDown => self.send_notify(content).unwrap(),
+            Event::NodeUp | Event::NodeDown | Event::Expire => {
+                if !content.is_empty() {
+                    self.send_notify(content).unwrap();
+                }
+            }
             Event::Custom => {
                 info!("render.custom.tpl => {content}");
                 if !content.is_empty() {
-                    self.send_notify(format!("{}\n{}", self.config.title, content))
+                    self.send_notify(format!("{}\n{}", config.title, content))
                         .unwrap_or_else(|err| {
                             error!("send_msg err => {err:?}");
                         });

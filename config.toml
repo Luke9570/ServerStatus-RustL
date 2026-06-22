@@ -11,8 +11,8 @@ tls_dir = "tls"
 
 # 管理员账号,不设置默认随机生成，用于查看 /detail, /map
 jwt_secret = "" # 修改这个, 使用 openssl rand -base64 16 生成 secret
-admin_user = ""
-admin_pass = ""
+admin_user = "admin"
+admin_pass = "" # 留空时启动会随机生成；正式部署请设置强密码
 
 # hosts 跟 hosts_group 两种配置模式任挑一种配置即可
 # name 主机唯一标识，不可重复，alias 为展示名
@@ -25,6 +25,11 @@ admin_pass = ""
 # os 标签可选，不填则使用上报数据，ndd(next due date) 下次续费时间, spec 为主机规格
 # os 可用值 centos debian ubuntu alpine pi arch windows linux macos android freebsd
 hosts = [
+  # VPS expiry can be set with expire, billing.end_date, or labels ndd=YYYY/MM/DD.
+  # With billing.auto_renewal enabled, cycle is used to calculate the next due date locally.
+  # Supported cycle examples: Day, Week, Month, Quarter, HalfYear, Year, 30d, 3m, 1y.
+  # Larger weight floats higher while online; offline nodes are always placed at the bottom.
+  # {name = "example", password = "p1", alias = "example", weight = 10050, expire = "2026-12-31", billing = {start_date = "2026-01-01", end_date = "2026-12-31", auto_renewal = "1", cycle = "Year", amount = "200EUR"}, labels = "spec=2C/4G/60G;"},
   {name = "h1", password = "p1", alias = "n1", location = "🏠", type = "kvm", labels = "os=freebsd;ndd=2022/11/25;spec=2C/4G/60G;"},
   {name = "h2", password = "p2", alias = "n2", location = "🏢", type = "kvm", disabled = false},
   {name = "h3", password = "p3", alias = "n3", location = "🏡", type = "kvm", monthstart = 1},
@@ -41,6 +46,7 @@ hosts = [
 # gid 为模板组id, 自动注册唯一标识，不可重复
 # eg. ./stat_client -a "http://127.0.0.1:8080/report" -g g1 -p pp
 hosts_group = [
+  {gid = "renew", password = "pp", location = "us", type = "kvm", billing = {end_date = "2022-11-25", auto_renewal = "1", cycle = "Year", amount = "200EUR"}, labels = "os=centos;spec=2C/4G/60G;"},
   # 可以按国家地区或用途来做分组
   {gid = "g1", password = "pp", location = "🏠", type = "kvm", labels = "os=centos;ndd=2022/11/25;spec=2C/4G/60G;"},
   {gid = "g2", password = "pp", location = "🏢", type = "kvm", notify = true},
@@ -60,6 +66,15 @@ workspace = "/opt/ServerStatus"
 # 不开启告警，可忽略后面配置，或者删除不需的通知方式
 # 告警间隔默认为30s
 notify_interval = 30
+
+# Subscription expiration notification.
+# Sources, in order: host.expire, host.billing.end_date, labels expire/expires/end_date/ndd.
+# Date formats: 2026-12-31, 2026/12/31, 2026-12-31 23:59:59, or RFC3339.
+[expire_notify]
+enabled = false
+days = [30, 14, 7, 3, 1, 0]
+interval = 86400
+
 # https://core.telegram.org/bots/api
 # https://jinja.palletsprojects.com/en/3.0.x/templates/#if
 [tgbot]
@@ -83,7 +98,40 @@ custom_tpl = """
 <pre>😲 {{host.name}} 主机硬盘使用率超50%, 当前{{ (100 * host.hdd_used / host.hdd_total) | round }}% </pre>
 {% endif %}
 """
+expire_tpl = """
+{{config.title}}
+<pre>VPS 到期提醒: {{host.alias}}</pre>
+<pre>到期: {{host.expire.date}} / {{host.expire.label}}</pre>
+<pre>续期: {{host.expire.auto_renewal}} {{host.expire.cycle}}</pre>
+"""
 ###################### tgbot end ##########################
+
+[bark]
+enabled = false
+server = "https://api.day.app"
+device_key = "<bark device key>"
+title = "ServerStatus"
+group = "ServerStatus"
+icon = ""
+sound = ""
+url = ""
+timeout = 5
+online_tpl = "{{host.location}} {{host.alias}} 恢复上线"
+offline_tpl = "{{host.location}} {{host.alias}} 已经掉线"
+custom_tpl = """
+{% if host.memory_used / host.memory_total > 0.8 %}
+{{host.alias}} 内存使用率超过 80%，当前 {{ (100 * host.memory_used / host.memory_total) | round }}%
+{% endif %}
+{% if host.hdd_used / host.hdd_total > 0.8 %}
+{{host.alias}} 硬盘使用率超过 80%，当前 {{ (100 * host.hdd_used / host.hdd_total) | round }}%
+{% endif %}
+"""
+expire_tpl = """
+VPS 到期提醒: {{host.alias}}
+到期: {{host.expire.date}} / {{host.expire.label}}
+续期: {{host.expire.auto_renewal}} {{host.expire.cycle}}
+"""
+###################### bark end ##########################
 
 ## 可选 单纯记录 event 到日志文件，调试自定义告警使用
 [log]

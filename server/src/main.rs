@@ -26,8 +26,10 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 
 mod assets;
+mod admin;
 mod auth;
 mod config;
+mod expiry;
 mod grpc;
 mod http;
 mod jinja;
@@ -62,8 +64,9 @@ fn create_app_router() -> Router {
         .route("/json/stats.json", get(http::get_stats_json)) // 兼容就旧主题
         // .route("/config.pub.json", get(http::get_site_config_json)) // TODO
         .route("/api/admin/authorize", post(jwt::authorize))
+        .route("/api/admin/settings", get(http::admin_settings).post(http::save_admin_settings))
         .route("/api/admin/{path}", get(http::admin_api)) // stats.json || config.json
-        // .route("/admin", get(assets::admin_index_handler))
+        .route("/admin", get(assets::admin_index_handler))
         .route("/detail", get(http::get_detail))
         .route("/map", get(http::get_map))
         .route("/i", get(http::init_client))
@@ -133,6 +136,7 @@ async fn main() -> Result<(), anyhow::Error> {
         error!("can't parse config");
         process::exit(1);
     }
+    admin::init().unwrap();
 
     // init tpl
     http::init_jinja_tpl().unwrap();
@@ -141,7 +145,7 @@ async fn main() -> Result<(), anyhow::Error> {
     *notifier::NOTIFIER_HANDLE.lock().unwrap() = Some(Handle::current());
     let cfg = G_CONFIG.get().unwrap();
     let notifies: Arc<Mutex<Vec<Box<dyn notifier::Notifier + Send>>>> = Arc::new(Mutex::new(Vec::new()));
-    if cfg.tgbot.enabled {
+    if cfg.tgbot.enabled || admin::tgbot_enabled() {
         let o = Box::new(notifier::tgbot::TGBot::new(&cfg.tgbot));
         notifies.lock().unwrap().push(o);
     }
@@ -151,6 +155,10 @@ async fn main() -> Result<(), anyhow::Error> {
     }
     if cfg.email.enabled {
         let o = Box::new(notifier::email::Email::new(&cfg.email));
+        notifies.lock().unwrap().push(o);
+    }
+    if cfg.bark.enabled || admin::bark_enabled() {
+        let o = Box::new(notifier::bark::Bark::new(&cfg.bark));
         notifies.lock().unwrap().push(o);
     }
     if cfg.log.enabled {

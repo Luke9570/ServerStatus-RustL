@@ -5,6 +5,8 @@ use stat_common::server_status::{DiskInfo, IpInfo, SysInfo};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::expiry::ExpireInfo;
+
 fn default_as_true() -> bool {
     true
 }
@@ -73,6 +75,10 @@ pub struct HostStat {
 
     #[serde(skip_deserializing)]
     pub labels: String,
+    #[serde(default = "Default::default")]
+    pub expire: ExpireInfo,
+    #[serde(default = "default_as_true")]
+    pub expire_notify: bool,
     #[serde(skip_deserializing)]
     pub custom: String,
 

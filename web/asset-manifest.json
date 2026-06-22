@@ -1,12 +1,19 @@
 {
   "files": {
     "main.css": "/static/css/main.479df68b.css",
+    "expiry.css": "/static/css/expiry.css",
+    "admin.css": "/static/css/admin.css",
     "main.js": "/static/js/main.32884401.js",
+    "expiry.js": "/static/js/expiry.js",
+    "admin.js": "/static/js/admin.js",
     "static/js/748.aa97738e.chunk.js": "/static/js/748.aa97738e.chunk.js",
-    "index.html": "/index.html"
+    "index.html": "/index.html",
+    "admin.html": "/admin.html"
   },
   "entrypoints": [
     "static/css/main.479df68b.css",
-    "static/js/main.32884401.js"
+    "static/css/expiry.css",
+    "static/js/main.32884401.js",
+    "static/js/expiry.js"
   ]
 }

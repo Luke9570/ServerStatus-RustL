@@ -20,6 +20,8 @@ target/
 
 certs
 stats.json
+admin-overrides.json
+runtime/
 tmp
 .prod
 sync.sh

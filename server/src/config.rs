@@ -1,12 +1,13 @@
 #![deny(warnings)]
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use uuid::Uuid;
 
+use crate::expiry::{BillingConfig, ExpireNotifyConfig};
 use crate::notifier;
 
 fn default_as_true() -> bool {
@@ -43,6 +44,12 @@ pub struct Host {
     pub disabled: bool,
     #[serde(default = "Default::default")]
     pub labels: String,
+    #[serde(default = "Default::default")]
+    pub expire: String,
+    #[serde(default = "Default::default")]
+    pub billing: BillingConfig,
+    #[serde(default = "default_as_true")]
+    pub expire_notify: bool,
 
     #[serde(skip_deserializing)]
     pub last_network_in: u64,
@@ -77,6 +84,12 @@ pub struct HostGroup {
     pub weight: u64,
     #[serde(default = "Default::default")]
     pub labels: String,
+    #[serde(default = "Default::default")]
+    pub expire: String,
+    #[serde(default = "Default::default")]
+    pub billing: BillingConfig,
+    #[serde(default = "default_as_true")]
+    pub expire_notify: bool,
 }
 
 impl HostGroup {
@@ -92,6 +105,9 @@ impl HostGroup {
             pos: self.pos,
             weight: self.weight,
             labels: self.labels.clone(),
+            expire: self.expire.clone(),
+            billing: self.billing.clone(),
+            expire_notify: self.expire_notify,
             ..Default::default()
         }
     }
@@ -123,9 +139,13 @@ pub struct Config {
     #[serde(default = "Default::default")]
     pub email: notifier::email::Config,
     #[serde(default = "Default::default")]
+    pub bark: notifier::bark::Config,
+    #[serde(default = "Default::default")]
     pub log: notifier::log::Config,
     #[serde(default = "Default::default")]
     pub webhook: notifier::webhook::Config,
+    #[serde(default = "Default::default")]
+    pub expire_notify: ExpireNotifyConfig,
 
     #[serde(default = "Default::default")]
     pub hosts: Vec<Host>,
@@ -167,8 +187,73 @@ impl Config {
         false
     }
 
-    pub fn to_json_value(&self) -> Result<Value> {
-        serde_json::to_value(self).map_err(anyhow::Error::new)
+    pub fn to_admin_json_value(&self) -> Value {
+        let hosts: Vec<Value> = self
+            .hosts
+            .iter()
+            .map(|host| {
+                json!({
+                    "name": host.name,
+                    "alias": host.alias,
+                    "location": host.location,
+                    "type": host.r#type,
+                    "monthstart": host.monthstart,
+                    "notify": host.notify,
+                    "disabled": host.disabled,
+                    "labels": host.labels,
+                    "expire": host.expire,
+                    "billing": host.billing,
+                    "expire_notify": host.expire_notify,
+                    "weight": host.weight,
+                    "gid": host.gid,
+                    "latest_ts": host.latest_ts,
+                })
+            })
+            .collect();
+        let hosts_group: Vec<Value> = self
+            .hosts_group
+            .iter()
+            .map(|group| {
+                json!({
+                    "gid": group.gid,
+                    "location": group.location,
+                    "type": group.r#type,
+                    "notify": group.notify,
+                    "labels": group.labels,
+                    "expire": group.expire,
+                    "billing": group.billing,
+                    "expire_notify": group.expire_notify,
+                    "weight": group.weight,
+                })
+            })
+            .collect();
+
+        json!({
+            "notify_interval": self.notify_interval,
+            "offline_threshold": self.offline_threshold,
+            "expire_notify": self.expire_notify,
+            "hosts": hosts,
+            "hosts_group": hosts_group,
+            "tgbot": {
+                "enabled": self.tgbot.enabled,
+                "bot_token": "",
+                "chat_id": "",
+                "title": self.tgbot.title,
+                "expire_tpl": self.tgbot.expire_tpl,
+            },
+            "bark": {
+                "enabled": self.bark.enabled,
+                "server": self.bark.server,
+                "device_key": "",
+                "title": self.bark.title,
+                "group": self.bark.group,
+                "icon": self.bark.icon,
+                "sound": self.bark.sound,
+                "url": self.bark.url,
+                "timeout": self.bark.timeout,
+                "expire_tpl": self.bark.expire_tpl,
+            },
+        })
     }
 
     // pub fn to_string(&self) -> Result<String> {
@@ -188,13 +273,17 @@ pub fn from_str(content: &str) -> Option<Config> {
         if host.monthstart < 1 || host.monthstart > 31 {
             host.monthstart = 1;
         }
-        host.weight = 10000_u64 - idx as u64;
+        if host.weight == 0 {
+            host.weight = 10000_u64 - idx as u64;
+        }
         o.hosts_map.insert(host.name.clone(), host.clone());
     }
 
     for (idx, group) in o.hosts_group.iter_mut().enumerate() {
         group.pos = idx;
-        group.weight = (10000 - (1 + idx) * 100) as u64;
+        if group.weight == 0 {
+            group.weight = (10000 - (1 + idx) * 100) as u64;
+        }
         o.hosts_group_map.insert(group.gid.clone(), group.clone());
     }
 
@@ -204,6 +293,12 @@ pub fn from_str(content: &str) -> Option<Config> {
     if o.notify_interval < 30 {
         o.notify_interval = 30;
     }
+    if o.expire_notify.interval < 60 {
+        o.expire_notify.interval = 60;
+    }
+    o.expire_notify.days.retain(|day| *day >= 0);
+    o.expire_notify.days.sort_unstable();
+    o.expire_notify.days.dedup();
     if o.group_gc < 30 {
         o.group_gc = 30;
     }

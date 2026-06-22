@@ -17,33 +17,37 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::G_CONFIG;
 
+const ADMIN_SCOPE: &str = "admin";
+const TOKEN_TTL_SECONDS: u64 = 7 * 24 * 3600;
+
 pub static KEYS: Lazy<Keys> = Lazy::new(|| {
     let cfg = G_CONFIG.get().unwrap();
     Keys::new(cfg.jwt_secret.as_ref().unwrap().as_bytes())
 });
 
 pub async fn authorize(Json(payload): Json<AuthPayload>) -> Result<Json<AuthBody>, AuthError> {
-    if payload.username.is_empty() || payload.password.is_empty() {
+    let username = payload.username.trim();
+    if username.is_empty() || payload.password.is_empty() {
         return Err(AuthError::MissingCredentials);
     }
 
     let mut auth_ok = false;
     if let Some(cfg) = G_CONFIG.get() {
-        auth_ok = cfg.admin_auth(&payload.username, &payload.password);
+        auth_ok = cfg.admin_auth(username, &payload.password);
     }
     if !auth_ok {
         return Err(AuthError::WrongCredentials);
     }
+
+    let now = unix_ts();
     let claims = Claims {
-        sub: "dev@ssr.rs".to_owned(),
-        company: "Company".to_owned(),
-        // Mandatory expiry time as UTC timestamp
-        exp: usize::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap_or(usize::MAX) + 7 * 24 * 3600,
+        sub: username.to_owned(),
+        scope: ADMIN_SCOPE.to_owned(),
+        iat: now,
+        exp: now.saturating_add(usize::try_from(TOKEN_TTL_SECONDS).unwrap_or(usize::MAX)),
     };
-    // Create the authorization token
     let token = encode(&Header::default(), &claims, &KEYS.encoding).map_err(|_| AuthError::TokenCreation)?;
 
-    // Send the authorized token
     Ok(Json(AuthBody::new(token)))
 }
 
@@ -63,9 +67,10 @@ impl Keys {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String, // 可选。标题 (令牌指向的人)
-    pub company: String,
-    pub exp: usize, // 必须。(validate_exp 在验证中默认为真值)。截止时间 (UTC 时间戳)
+    pub sub: String,
+    pub scope: String,
+    pub iat: usize,
+    pub exp: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,7 +95,7 @@ pub enum AuthError {
 
 impl Display for Claims {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Email: {}\nCompany: {}\nexp: {}", self.sub, self.company, self.exp)
+        write!(f, "sub: {}\nscope: {}\niat: {}\nexp: {}", self.sub, self.scope, self.iat, self.exp)
     }
 }
 
@@ -110,16 +115,22 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // Extract the token from the authorization header
         let TypedHeader(Authorization(bearer)) = parts
             .extract::<TypedHeader<Authorization<Bearer>>>()
             .await
             .map_err(|_| AuthError::InvalidToken)?;
-        // Decode the user data
         let token_data = decode::<Claims>(bearer.token(), &KEYS.decoding, &Validation::default())
             .map_err(|_| AuthError::InvalidToken)?;
+        let claims = token_data.claims;
+        if claims.scope != ADMIN_SCOPE {
+            return Err(AuthError::InvalidToken);
+        }
+        let cfg = G_CONFIG.get().ok_or(AuthError::InvalidToken)?;
+        if cfg.admin_user.as_deref() != Some(claims.sub.as_str()) {
+            return Err(AuthError::InvalidToken);
+        }
 
-        Ok(token_data.claims)
+        Ok(claims)
     }
 }
 
@@ -129,11 +140,15 @@ impl IntoResponse for AuthError {
             AuthError::WrongCredentials => (StatusCode::UNAUTHORIZED, "Wrong credentials"),
             AuthError::MissingCredentials => (StatusCode::BAD_REQUEST, "Missing credentials"),
             AuthError::TokenCreation => (StatusCode::INTERNAL_SERVER_ERROR, "Token creation error"),
-            AuthError::InvalidToken => (StatusCode::FORBIDDEN, "Invalid token"),
+            AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token"),
         };
         let body = Json(json!({
             "error": error_message,
         }));
         (status, body).into_response()
     }
+}
+
+fn unix_ts() -> usize {
+    usize::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap_or(usize::MAX)
 }

@@ -16,6 +16,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Host;
+use crate::expiry;
 use crate::notifier::{Event, Notifier};
 use crate::payload::{HostStat, StatsResp};
 
@@ -138,6 +139,7 @@ impl StatsMgr {
                         if info.disabled {
                             continue;
                         }
+                        crate::admin::apply_host_override(info);
 
                         // 补齐
                         if stat_t.location.is_empty() {
@@ -151,6 +153,8 @@ impl StatsMgr {
                         stat_t.disabled = info.disabled;
                         stat_t.weight += info.weight;
                         stat_t.labels = info.labels.clone();
+                        stat_t.expire = expiry::build_expire_info(&info.expire, &info.billing, &info.labels);
+                        stat_t.expire_notify = info.expire_notify;
 
                         // !group
                         if !info.alias.is_empty() {
@@ -226,12 +230,16 @@ impl StatsMgr {
             let mut latest_save_ts = 0_u64;
             let mut latest_group_gc = 0_u64;
             let mut latest_alert_check_ts = 0_u64;
+            let mut expire_notify_state: HashMap<String, String> = HashMap::new();
             move || loop {
                 thread::sleep(Duration::from_millis(500));
 
                 let mut resp = StatsResp::new();
                 let now = resp.updated;
                 let mut any_notified = false;
+                let expire_notify = crate::admin::effective_expire_notify(&cfg.expire_notify);
+                let expire_check_due =
+                    expire_notify.enabled && latest_alert_check_ts + expire_notify.interval < now;
 
                 // group gc
                 if latest_group_gc + cfg.group_gc < now {
@@ -259,6 +267,7 @@ impl StatsMgr {
                                 o.online4 = false;
                                 o.online6 = false;
                             }
+                            expiry::refresh_expire_info(&mut o.expire);
 
                             // labels
                             if !o.labels.contains("os=") {
@@ -277,8 +286,20 @@ impl StatsMgr {
                                 }
                             }
 
-                            // determine notify event (o is dropped after this block)
-                            if o.notify && latest_notify_ts + cfg.notify_interval < now {
+                            let expire_event = if expire_check_due && o.notify && o.expire_notify {
+                                if let Some(marker) = expiry::alert_marker(&o.expire, &expire_notify.days) {
+                                    let should_notify = expire_notify_state.get(&o.name) != Some(&marker);
+                                    expire_notify_state.insert(o.name.clone(), marker);
+                                    should_notify
+                                } else {
+                                    expire_notify_state.remove(&o.name);
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
+                            let node_event = if o.notify && latest_notify_ts + cfg.notify_interval < now {
                                 if o.online4 || o.online6 {
                                     Some(Event::Custom)
                                 } else {
@@ -287,13 +308,18 @@ impl StatsMgr {
                                 }
                             } else {
                                 None
-                            }
+                            };
+
+                            (node_event, expire_event)
                         };
 
                         // client notify — Arc::clone is O(1), no HostStat copy
-                        if let Some(event) = notify_event {
+                        if let Some(event) = notify_event.0 {
                             notifier_tx.send((event, Arc::clone(stat)));
                             any_notified = true;
+                        }
+                        if notify_event.1 {
+                            notifier_tx.send((Event::Expire, Arc::clone(stat)));
                         }
 
                         resp.servers.push(Arc::clone(stat));
@@ -301,9 +327,17 @@ impl StatsMgr {
                     if any_notified {
                         latest_notify_ts = now;
                     }
+                    if expire_check_due {
+                        latest_alert_check_ts = now;
+                    }
                 }
 
                 resp.servers.sort_by(|a, b| {
+                    let a_online = a.online4 || a.online6;
+                    let b_online = b.online4 || b.online6;
+                    if a_online != b_online {
+                        return b_online.cmp(&a_online);
+                    }
                     if a.weight != b.weight {
                         return a.weight.cmp(&b.weight).reverse();
                     }

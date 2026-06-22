@@ -16,6 +16,10 @@ use crate::notifier::{get_tag, Event, HostStat, NOTIFIER_HANDLE};
 static TOKEN_URL: &str = "https://qyapi.weixin.qq.com/cgi-bin/gettoken";
 const KIND: &str = "wechat";
 
+fn default_expire_tpl() -> String {
+    "{{config.title}}\n{{host.location}} {{host.name}} {{host.expire.label}}\nExpire: {{host.expire.date}}".to_string()
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Config {
     pub enabled: bool,
@@ -26,6 +30,8 @@ pub struct Config {
     pub online_tpl: String,
     pub offline_tpl: String,
     pub custom_tpl: String,
+    #[serde(default = "default_expire_tpl")]
+    pub expire_tpl: String,
 }
 
 pub struct WeChat {
@@ -42,6 +48,7 @@ impl WeChat {
         add_template(KIND, get_tag(&Event::NodeUp), o.config.online_tpl.clone());
         add_template(KIND, get_tag(&Event::NodeDown), o.config.offline_tpl.clone());
         add_template(KIND, get_tag(&Event::Custom), o.config.custom_tpl.clone());
+        add_template(KIND, get_tag(&Event::Expire), o.config.expire_tpl.clone());
 
         o
     }
@@ -122,7 +129,11 @@ impl crate::notifier::Notifier for WeChat {
             true,
         )
         .map(|content| match *e {
-            Event::NodeUp | Event::NodeDown => self.send_notify(content).unwrap(),
+            Event::NodeUp | Event::NodeDown | Event::Expire => {
+                if !content.is_empty() {
+                    self.send_notify(content).unwrap();
+                }
+            }
             Event::Custom => {
                 info!("render.custom.tpl => {content}");
                 if !content.is_empty() {

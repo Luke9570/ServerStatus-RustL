@@ -7,6 +7,7 @@ use tokio::runtime::Handle;
 use crate::payload::HostStat;
 
 pub mod email;
+pub mod bark;
 pub mod log;
 pub mod tgbot;
 pub mod webhook;
@@ -19,6 +20,7 @@ pub enum Event {
     NodeUp,
     NodeDown,
     Custom,
+    Expire,
 }
 
 fn get_tag(e: &Event) -> &'static str {
@@ -26,6 +28,7 @@ fn get_tag(e: &Event) -> &'static str {
         Event::NodeUp => "NodeUp",
         Event::NodeDown => "NodeDown",
         Event::Custom => "Custom",
+        Event::Expire => "Expire",
     }
 }
 

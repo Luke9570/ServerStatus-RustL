@@ -16,6 +16,7 @@ use std::fmt::Write as _;
 use stat_common::{server_status::StatRequest, utils::bytes2human};
 
 use crate::auth;
+use crate::admin;
 use crate::jinja;
 use crate::jwt;
 use crate::G_CONFIG;
@@ -43,7 +44,7 @@ pub async fn admin_api(_claims: jwt::Claims, Path(path): Path<String>) -> Json<V
             return Json(resp);
         }
         "config.json" => {
-            let resp = G_CONFIG.get().unwrap().to_json_value().unwrap();
+            let resp = G_CONFIG.get().unwrap().to_admin_json_value();
             return Json(resp);
         }
         _ => {
@@ -52,6 +53,36 @@ pub async fn admin_api(_claims: jwt::Claims, Path(path): Path<String>) -> Json<V
     }
 
     Json(json!({ "code": 0, "message": "ok" }))
+}
+
+pub async fn admin_settings(_claims: jwt::Claims) -> Json<Value> {
+    Json(json!({
+        "code": 0,
+        "message": "ok",
+        "data": admin::snapshot(),
+    }))
+}
+
+pub async fn save_admin_settings(
+    _claims: jwt::Claims,
+    Json(payload): Json<admin::AdminData>,
+) -> impl IntoResponse {
+    match admin::replace(payload) {
+        Ok(data) => Json(json!({
+            "code": 0,
+            "message": "saved",
+            "data": data,
+        }))
+        .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "code": 1,
+                "message": err.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 #[allow(clippy::unnecessary_wraps)]
