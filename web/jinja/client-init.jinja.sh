@@ -15,6 +15,7 @@ export SSR_CLIENT_OPTS='{{client_opts}}'
 export SSR_WORKSPACE={{workspace}}
 export SSR_CN={{cn}}
 export SSR_RELEASE_REPO=${SSR_RELEASE_REPO:-Luke9570/ServerStatus-RustL}
+export SSR_RELEASE_FALLBACK_REPO=${SSR_RELEASE_FALLBACK_REPO:-zdz/ServerStatus-Rust}
 
 Info="\033[32m[info]\033[0m"
 Error="\033[31m[err]\033[0m"
@@ -106,6 +107,21 @@ function install_deps() {
     fi
 }
 
+function download_client_from_repo() {
+    repo="$1"
+    url="https://github.com/${repo}/releases/download/v{{pkg_version}}/client-${arch}-unknown-linux-musl.zip"
+    say "download from ${repo}"
+    if ! wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "${url}"; then
+        say "download failed from ${repo}"
+        return 1
+    fi
+    if ! unzip -tq "client-${arch}-unknown-linux-musl.zip" > /dev/null 2>&1; then
+        say "invalid zip from ${repo}"
+        return 1
+    fi
+    return 0
+}
+
 function download_client() {
 
     cd ${SSR_WORKSPACE}
@@ -113,11 +129,12 @@ function download_client() {
 
     say "start download the stat_client"
 
-    if [ "${SSR_CN}" = true ]; then
-        say "using GitHub release repo: ${SSR_RELEASE_REPO}"
-        wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "https://github.com/${SSR_RELEASE_REPO}/releases/download/v{{pkg_version}}/client-${arch}-unknown-linux-musl.zip"
-    else
-        wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "https://github.com/${SSR_RELEASE_REPO}/releases/download/v{{pkg_version}}/client-${arch}-unknown-linux-musl.zip"
+    if ! download_client_from_repo "${SSR_RELEASE_REPO}"; then
+        if [ "${SSR_RELEASE_REPO}" = "${SSR_RELEASE_FALLBACK_REPO}" ]; then
+            err "failed to download stat_client from ${SSR_RELEASE_REPO}"
+        fi
+        say "fallback release repo: ${SSR_RELEASE_FALLBACK_REPO}"
+        download_client_from_repo "${SSR_RELEASE_FALLBACK_REPO}" || err "failed to download stat_client from ${SSR_RELEASE_FALLBACK_REPO}"
     fi
 
     say "download stat_client succ"
@@ -126,10 +143,11 @@ function download_client() {
     systemctl stop stat_client > /dev/null | true
 
     say "unzip client-${arch}-unknown-linux-musl.zip"
-    unzip -o client-${arch}-unknown-linux-musl.zip
+    unzip -o client-${arch}-unknown-linux-musl.zip || err "failed to unzip stat_client package"
     rm -f "stat_client.service"
 
-    chmod +x ${SSR_WORKSPACE}/stat_client
+    [ -f "${SSR_WORKSPACE}/stat_client" ] || err "stat_client not found after unzip"
+    chmod +x ${SSR_WORKSPACE}/stat_client || err "failed to chmod stat_client"
 }
 
 function install_client_service() {

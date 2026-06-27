@@ -235,6 +235,8 @@ HTTP 上报：
 SSR_RELEASE_REPO=Luke9570/ServerStatus-RustL curl -fsSL "https://example.com/i?..." | bash
 ```
 
+如果当前 fork 尚未发布对应版本的 `stat_client` release asset，安装脚本会自动回退到 `zdz/ServerStatus-Rust` 下载兼容客户端，避免下载到 GitHub 404 页面后继续安装失败服务。
+
 `scripts/one-touch.sh` 与 `scripts/status.sh` 也默认使用 `Luke9570/ServerStatus-RustL` 的 Release；如需使用其它 Release 源，同样可设置 `SSR_RELEASE_REPO`。
 
 ## 自托管部署
