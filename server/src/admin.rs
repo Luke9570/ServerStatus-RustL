@@ -5,9 +5,13 @@ use ring::{pbkdf2, rand};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Mutex;
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::config::{Host, HostGroup};
 use crate::expiry::{BillingConfig, ExpireNotifyConfig};
@@ -21,6 +25,7 @@ const ADMIN_PASSWORD_SALT_BYTES: usize = 16;
 const ADMIN_PASSWORD_HASH_BYTES: usize = 32;
 const MIN_ADMIN_PASSWORD_LEN: usize = 12;
 const MAX_ADMIN_PASSWORD_LEN: usize = 256;
+const MAX_ADMIN_USERNAME_LEN: usize = 64;
 
 static ADMIN_STATE: OnceCell<AdminState> = OnceCell::new();
 
@@ -204,6 +209,8 @@ pub struct BarkOverride {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AdminData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_password_hash: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub admin_session_version: u64,
@@ -278,9 +285,22 @@ fn write_data(state: &AdminState, data: AdminData) -> Result<AdminData> {
         }
     }
 
-    fs::write(&state.path, serde_json::to_string_pretty(&data)?)?;
+    write_settings_file(&state.path, &serde_json::to_string_pretty(&data)?)?;
     *state.data.lock().unwrap() = data.clone();
     Ok(data)
+}
+
+fn write_settings_file(path: &str, contents: &str) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
 }
 
 pub fn public_snapshot() -> AdminData {
@@ -368,7 +388,13 @@ pub fn ensure_default_access_key() -> Result<HostGroup> {
 }
 
 pub fn effective_admin_user(base: Option<&str>) -> Option<String> {
-    base.map(str::to_string)
+    let data = snapshot();
+    data.admin_user
+        .as_deref()
+        .map(str::trim)
+        .filter(|user| !user.is_empty())
+        .map(str::to_string)
+        .or_else(|| base.map(str::trim).filter(|user| !user.is_empty()).map(str::to_string))
 }
 
 pub fn admin_password_matches(base: Option<&str>, password: &str) -> bool {
@@ -395,27 +421,51 @@ pub fn admin_session_version() -> u64 {
 
 #[derive(Debug)]
 pub enum PasswordUpdateError {
+    InvalidUsername,
     WrongCurrentPassword,
     NewPasswordTooShort,
     NewPasswordTooLong,
     NewPasswordUnchanged,
+    NothingChanged,
     HashFailed,
     SaveFailed,
 }
 
-pub fn change_admin_password(
+pub fn update_admin_credentials(
+    base_user: Option<&str>,
     base: Option<&str>,
     current_password: &str,
-    new_password: &str,
+    new_username: Option<&str>,
+    new_password: Option<&str>,
 ) -> std::result::Result<(), PasswordUpdateError> {
     let state = ADMIN_STATE.get().expect("admin state not initialized");
     let mut data = state.data.lock().unwrap().clone();
     if !admin_password_matches_from_data(&data, base, current_password) {
         return Err(PasswordUpdateError::WrongCurrentPassword);
     }
-    validate_new_admin_password(current_password, new_password)?;
-    let hash = hash_admin_password(new_password).map_err(|_| PasswordUpdateError::HashFailed)?;
-    data.admin_password_hash = Some(hash);
+
+    let current_user = effective_admin_user_from_data(&data, base_user).unwrap_or_else(|| "admin".to_string());
+    let next_user = new_username
+        .map(str::trim)
+        .filter(|user| !user.is_empty())
+        .unwrap_or(current_user.as_str());
+    validate_admin_username(next_user)?;
+
+    let next_password = new_password.map(str::trim).filter(|password| !password.is_empty());
+    let user_changed = next_user != current_user;
+    let password_changed = next_password.is_some();
+    if !user_changed && !password_changed {
+        return Err(PasswordUpdateError::NothingChanged);
+    }
+    if let Some(next_password) = next_password {
+        validate_new_admin_password(current_password, next_password)?;
+        let hash = hash_admin_password(next_password).map_err(|_| PasswordUpdateError::HashFailed)?;
+        data.admin_password_hash = Some(hash);
+    }
+    if user_changed {
+        data.admin_user = Some(next_user.to_string());
+    }
+    normalize_admin_data(&mut data);
     data.admin_session_version = data.admin_session_version.saturating_add(1);
     write_data(state, data)
         .map(|_| ())
@@ -654,12 +704,9 @@ pub fn notification_methods_allow(methods: &[String], notifier_kind: &str) -> bo
 }
 
 fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
-    if data.admin_password_hash.is_none() {
-        data.admin_password_hash.clone_from(&current.admin_password_hash);
-    }
-    if data.admin_session_version == 0 {
-        data.admin_session_version = current.admin_session_version;
-    }
+    data.admin_user.clone_from(&current.admin_user);
+    data.admin_password_hash.clone_from(&current.admin_password_hash);
+    data.admin_session_version = current.admin_session_version;
     if let (Some(next), Some(prev)) = (&mut data.tgbot, &current.tgbot) {
         if next.bot_token.trim().is_empty() {
             next.bot_token.clone_from(&prev.bot_token);
@@ -687,6 +734,7 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
 }
 
 fn normalize_admin_data(data: &mut AdminData) {
+    normalize_optional_string(&mut data.admin_user);
     for override_data in data.hosts.values_mut() {
         override_data.normalize();
     }
@@ -845,6 +893,29 @@ fn override_string(target: &mut String, value: String) {
     }
 }
 
+fn effective_admin_user_from_data(data: &AdminData, base: Option<&str>) -> Option<String> {
+    data.admin_user
+        .as_deref()
+        .map(str::trim)
+        .filter(|user| !user.is_empty())
+        .map(str::to_string)
+        .or_else(|| base.map(str::trim).filter(|user| !user.is_empty()).map(str::to_string))
+}
+
+fn validate_admin_username(username: &str) -> std::result::Result<(), PasswordUpdateError> {
+    let username = username.trim();
+    if username.is_empty() || username.len() > MAX_ADMIN_USERNAME_LEN {
+        return Err(PasswordUpdateError::InvalidUsername);
+    }
+    if !username
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'@'))
+    {
+        return Err(PasswordUpdateError::InvalidUsername);
+    }
+    Ok(())
+}
+
 fn validate_new_admin_password(
     current_password: &str,
     new_password: &str,
@@ -957,5 +1028,14 @@ mod tests {
         let hash = hash_admin_password("new-secure-password").unwrap();
         assert!(verify_admin_password_hash(&hash, "new-secure-password"));
         assert!(!verify_admin_password_hash(&hash, "wrong-password"));
+    }
+
+    #[test]
+    fn validates_admin_username() {
+        assert!(validate_admin_username("admin_01@example").is_ok());
+        assert!(validate_admin_username("").is_err());
+        assert!(validate_admin_username("bad:name").is_err());
+        assert!(validate_admin_username("bad name").is_err());
+        assert!(validate_admin_username("a".repeat(MAX_ADMIN_USERNAME_LEN + 1).as_str()).is_err());
     }
 }

@@ -180,7 +180,7 @@ impl Config {
         false
     }
     pub fn admin_auth(&self, user: &str, pass: &str) -> bool {
-        if let Some(u) = self.admin_user.as_ref() {
+        if let Some(u) = crate::admin::effective_admin_user(self.admin_user.as_deref()) {
             return user.eq(u.as_str()) && crate::admin::admin_password_matches(self.admin_pass.as_deref(), pass);
         }
         false
@@ -329,18 +329,45 @@ pub fn from_str(content: &str) -> Option<Config> {
         o.group_gc = 30;
     }
 
-    if o.admin_user.is_none() || o.admin_user.as_ref()?.is_empty() {
+    if let Some(user) = o.admin_user.as_deref().map(str::trim).filter(|user| !user.is_empty()) {
+        o.admin_user = Some(user.to_string());
+    } else {
         o.admin_user = Some("admin".to_string());
     }
-    if o.admin_pass.is_none() || o.admin_pass.as_ref()?.is_empty() {
+    let generated_admin_pass = o
+        .admin_pass
+        .as_deref()
+        .map(str::trim)
+        .filter(|pass| !pass.is_empty())
+        .is_none();
+    if generated_admin_pass {
         o.admin_pass = Some(Uuid::new_v4().to_string());
+    } else if let Some(pass) = o.admin_pass.as_deref().map(str::trim) {
+        o.admin_pass = Some(pass.to_string());
     }
-    if o.jwt_secret.is_none() || o.jwt_secret.as_ref()?.is_empty() {
+    let generated_jwt_secret = o
+        .jwt_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|secret| !secret.is_empty())
+        .is_none();
+    if generated_jwt_secret {
         o.jwt_secret = Some(Uuid::new_v4().to_string());
+    } else if let Some(secret) = o.jwt_secret.as_deref().map(str::trim) {
+        o.jwt_secret = Some(secret.to_string());
     }
 
     eprintln!("✨ admin_user: {}", o.admin_user.as_ref()?);
-    eprintln!("✨ admin_pass: {}", o.admin_pass.as_ref()?);
+    if generated_admin_pass {
+        eprintln!("✨ admin_pass: {}", o.admin_pass.as_ref()?);
+    } else {
+        eprintln!("✨ admin_pass: configured (hidden)");
+    }
+    if generated_jwt_secret {
+        eprintln!("✨ jwt_secret: generated for this startup");
+    } else {
+        eprintln!("✨ jwt_secret: configured (hidden)");
+    }
 
     Some(o)
 }

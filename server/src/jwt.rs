@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::G_CONFIG;
 
 const ADMIN_SCOPE: &str = "admin";
-const TOKEN_TTL_SECONDS: u64 = 7 * 24 * 3600;
+const TOKEN_TTL_SECONDS: u64 = 3 * 24 * 3600;
 
 pub static KEYS: Lazy<Keys> = Lazy::new(|| {
     let cfg = G_CONFIG.get().unwrap();
@@ -133,7 +133,7 @@ where
             return Err(AuthError::InvalidToken);
         }
         let cfg = G_CONFIG.get().ok_or(AuthError::InvalidToken)?;
-        if cfg.admin_user.as_deref() != Some(claims.sub.as_str()) {
+        if crate::admin::effective_admin_user(cfg.admin_user.as_deref()).as_deref() != Some(claims.sub.as_str()) {
             return Err(AuthError::InvalidToken);
         }
         if claims.pwdv != crate::admin::admin_session_version() {

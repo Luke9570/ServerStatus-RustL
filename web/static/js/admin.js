@@ -1001,9 +1001,13 @@
     passwordCell.append(passwordWrap);
 
     const locationCell = document.createElement("td");
-    locationCell.append(input("js-access-location", item.location || ""));
+    const locationInput = input("js-access-location", item.location || "");
+    locationInput.placeholder = "留空自动识别";
+    locationCell.append(locationInput);
     const typeCell = document.createElement("td");
-    typeCell.append(input("js-access-type", item.type || ""));
+    const typeInput = input("js-access-type", item.type || "");
+    typeInput.placeholder = "留空自动识别";
+    typeCell.append(typeInput);
     const labelsCell = document.createElement("td");
     labelsCell.append(input("js-access-labels", item.labels || ""));
 
@@ -1134,6 +1138,10 @@
     interval.min = "1";
     interval.max = "86400";
     interval.step = "1";
+    const location = input("js-command-location", "");
+    location.placeholder = "留空自动识别";
+    const type = input("js-command-type", "");
+    type.placeholder = "留空自动识别";
     const weight = input("js-command-weight", "10000", "number");
     weight.min = "1";
     const grid = el("div", "editor-grid");
@@ -1141,8 +1149,8 @@
       field("服务器 ID", uid),
       field("显示名", alias),
       field("上报间隔秒", interval),
-      field("默认位置", input("js-command-location", "")),
-      field("默认类型", input("js-command-type", "")),
+      field("位置", location),
+      field("类型", type),
       field("权重", weight),
     );
     const options = el("div", "check-grid command-options");
@@ -1842,39 +1850,61 @@
     }
   }
 
+  function validAdminUsername(username) {
+    return /^[A-Za-z0-9_.@-]{1,64}$/.test(username);
+  }
+
   async function changeAdminPassword(event) {
     event.preventDefault();
+    const savedUsername = state.config?.admin?.username || "admin";
+    const username = $("#admin-username").value.trim();
     const currentPassword = $("#admin-current-password").value;
     const newPassword = $("#admin-new-password").value;
     const confirmPassword = $("#admin-new-password-confirm").value;
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      text("#password-message", "请填写完整");
+    const wantsPasswordChange = Boolean(newPassword || confirmPassword);
+    if (!username || !currentPassword) {
+      text("#password-message", "请填写用户名和当前密码");
       return;
     }
-    if (newPassword.length < 12) {
-      text("#password-message", "新密码至少需要 12 个字符");
+    if (!validAdminUsername(username)) {
+      text("#password-message", "用户名只能包含字母、数字、_、-、.、@，最长 64 字节");
       return;
     }
-    if (newPassword.length > 256) {
-      text("#password-message", "新密码不能超过 256 个字符");
+    if (!wantsPasswordChange && username === savedUsername) {
+      text("#password-message", "没有需要保存的账号更改");
       return;
     }
-    if (newPassword !== confirmPassword) {
-      text("#password-message", "两次输入的新密码不一致");
-      return;
+    if (wantsPasswordChange) {
+      if (!newPassword || !confirmPassword) {
+        text("#password-message", "请完整填写新密码和确认密码");
+        return;
+      }
+      if (newPassword.length < 12) {
+        text("#password-message", "新密码至少需要 12 个字符");
+        return;
+      }
+      if (newPassword.length > 256) {
+        text("#password-message", "新密码不能超过 256 个字符");
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        text("#password-message", "两次输入的新密码不一致");
+        return;
+      }
     }
-    if (hasUnsavedChanges() && !window.confirm("修改密码后需要重新登录，当前未保存的配置会丢失。确定继续？")) {
+    if (hasUnsavedChanges() && !window.confirm("保存账号设置后需要重新登录，当前未保存的配置会丢失。确定继续？")) {
       return;
     }
     $("#password-submit").disabled = true;
-    text("#password-message", "修改中...");
+    text("#password-message", "保存中...");
     try {
       const response = await fetch("/api/admin/password", {
         method: "POST",
         headers: authHeaders(true),
         body: JSON.stringify({
+          username,
           current_password: currentPassword,
-          new_password: newPassword,
+          new_password: wantsPasswordChange ? newPassword : "",
         }),
       });
       await readJson(response);
@@ -1882,8 +1912,9 @@
       clearSession();
       markPristine("");
       setView("login");
+      $("#username").value = username;
       $("#password").value = "";
-      text("#login-message", "密码已修改，请使用新密码重新登录");
+      text("#login-message", "账号设置已修改，请重新登录");
     } catch (err) {
       if (err.authExpired) {
         setView("login");

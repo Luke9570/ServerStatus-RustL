@@ -132,7 +132,7 @@ async fn main() -> Result<(), anyhow::Error> {
         eprintln!("✨ run in normal mode, load conf from local file `{}", &args.config);
         config::from_file(&args.config)
     } {
-        debug!("{}", serde_json::to_string_pretty(&cfg).unwrap());
+        debug!("config loaded");
         G_CONFIG.set(cfg).unwrap();
     } else {
         error!("can't parse config");

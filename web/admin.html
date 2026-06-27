@@ -281,29 +281,29 @@
             </section>
             <section class="settings-block">
               <h2>后台登录</h2>
-              <label>
-                当前用户
-                <input id="admin-username" disabled>
-              </label>
               <form id="password-form" class="password-change-form" autocomplete="off">
+                <label>
+                  用户名
+                  <input id="admin-username" autocomplete="username" required>
+                </label>
                 <label>
                   当前密码
                   <input id="admin-current-password" type="password" autocomplete="current-password" required>
                 </label>
                 <label>
                   新密码
-                  <input id="admin-new-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+                  <input id="admin-new-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" placeholder="留空不修改">
                 </label>
                 <label>
                   确认新密码
-                  <input id="admin-new-password-confirm" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+                  <input id="admin-new-password-confirm" type="password" autocomplete="new-password" minlength="12" maxlength="256" placeholder="留空不修改">
                 </label>
                 <div class="form-actions">
-                  <button id="password-submit" class="secondary" type="submit">修改密码</button>
+                  <button id="password-submit" class="secondary" type="submit">保存账号设置</button>
                   <output id="password-message" role="status"></output>
                 </div>
               </form>
-              <p class="muted">正式部署请使用 HTTPS；新密码只保存为本地哈希，config.toml 内的密码会作为备用初始密码。</p>
+              <p class="muted">正式部署请使用 HTTPS；新密码只保存为本地哈希，用户名会写入本地覆盖配置。</p>
             </section>
             <section class="settings-block">
               <h2>已删除服务器</h2>

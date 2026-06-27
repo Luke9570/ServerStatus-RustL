@@ -124,7 +124,10 @@ fn purge_deleted_hosts(names: Vec<String>) -> Response {
 #[derive(Debug, Deserialize)]
 pub struct AdminPasswordPayload {
     current_password: String,
-    new_password: String,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    new_password: Option<String>,
 }
 
 pub async fn change_admin_password(
@@ -132,18 +135,24 @@ pub async fn change_admin_password(
     Json(payload): Json<AdminPasswordPayload>,
 ) -> impl IntoResponse {
     let cfg = G_CONFIG.get().unwrap();
-    match admin::change_admin_password(
+    match admin::update_admin_credentials(
+        cfg.admin_user.as_deref(),
         cfg.admin_pass.as_deref(),
         &payload.current_password,
-        &payload.new_password,
+        payload.username.as_deref(),
+        payload.new_password.as_deref(),
     ) {
         Ok(()) => Json(json!({
             "code": 0,
-            "message": "password updated",
+            "message": "admin credentials updated",
         }))
         .into_response(),
         Err(err) => {
             let (status, message) = match err {
+                admin::PasswordUpdateError::InvalidUsername => (
+                    StatusCode::BAD_REQUEST,
+                    "用户名只能包含字母、数字、下划线、横线、点和 @，最长 64 字节",
+                ),
                 admin::PasswordUpdateError::WrongCurrentPassword => (StatusCode::BAD_REQUEST, "当前密码不正确"),
                 admin::PasswordUpdateError::NewPasswordTooShort => {
                     (StatusCode::BAD_REQUEST, "新密码至少需要 12 个字符")
@@ -154,6 +163,7 @@ pub async fn change_admin_password(
                 admin::PasswordUpdateError::NewPasswordUnchanged => {
                     (StatusCode::BAD_REQUEST, "新密码不能和当前密码相同")
                 }
+                admin::PasswordUpdateError::NothingChanged => (StatusCode::BAD_REQUEST, "没有需要保存的账号更改"),
                 admin::PasswordUpdateError::HashFailed | admin::PasswordUpdateError::SaveFailed => {
                     (StatusCode::INTERNAL_SERVER_ERROR, "修改密码失败")
                 }
