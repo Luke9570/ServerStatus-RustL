@@ -40,10 +40,10 @@ jobs:
           apt-get update -y -qq
           apt-get install -y -qq protobuf-compiler zip git cmake make g++ llvm
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      - name: Show Rust toolchain
+        run: |
+          rustc --version
+          cargo --version
 
       - name: Build release binaries
         run: cargo build --release --locked --target ${{ matrix.target }} -p stat_server -p stat_client
