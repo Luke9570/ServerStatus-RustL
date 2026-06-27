@@ -3,7 +3,7 @@ FROM rust:1-alpine AS builder
 WORKDIR /app
 COPY ./ /app
 
-RUN apk add --no-cache musl-dev git cmake make g++
+RUN apk add --no-cache musl-dev linux-headers git cmake make g++
 RUN cargo build --release -p stat_server --locked
 RUN strip /app/target/release/stat_server
 
