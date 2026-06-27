@@ -1,6 +1,6 @@
 # ServerStatus-RustL
 
-轻量 VPS 状态面板，基于 `ServerStatus-Rust` 分支继续开发。当前分支重点增强到期管理、后台配置、节点健康告警和 Telegram/Bark 通知，保持纯监控用途。
+轻量 VPS 状态面板，当前主线重点增强到期管理、后台配置、节点健康告警和 Telegram/Bark 通知，保持纯监控用途。
 
 ## 功能概览
 
@@ -235,7 +235,13 @@ HTTP 上报：
 SSR_RELEASE_REPO=Luke9570/ServerStatus-RustL curl -fsSL "https://example.com/i?..." | bash
 ```
 
-如果当前 fork 尚未发布对应版本的 `stat_client` release asset，安装脚本会自动回退到 `zdz/ServerStatus-Rust` 下载兼容客户端，避免下载到 GitHub 404 页面后继续安装失败服务。
+安装脚本只会从当前维护仓库的 Release 下载，不会回退到上游仓库。Release 中必须存在与当前版本匹配的 Agent 产物，例如 `client-x86_64-unknown-linux-musl.zip` 或 `client-aarch64-unknown-linux-musl.zip`；仓库内的 GitHub Actions 会在推送 `v*` tag 时自动创建这些产物。
+
+如需临时使用其它 tag，可额外设置 `SSR_RELEASE_TAG`：
+
+```bash
+SSR_RELEASE_TAG=v1.8.2 SSR_RELEASE_REPO=Luke9570/ServerStatus-RustL curl -fsSL "https://example.com/i?..." | bash
+```
 
 `scripts/one-touch.sh` 与 `scripts/status.sh` 也默认使用 `Luke9570/ServerStatus-RustL` 的 Release；如需使用其它 Release 源，同样可设置 `SSR_RELEASE_REPO`。
 
@@ -263,6 +269,26 @@ systemctl enable --now stat_server
 mkdir -p runtime
 docker compose up -d --build
 ```
+
+VPS 上从 GitHub 更新当前主线代码并重建容器：
+
+```bash
+cd /path/to/ServerStatus-RustL
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+docker compose build --no-cache
+docker compose up -d
+docker compose logs -f
+```
+
+如果你的 Compose 服务名不是默认值，请把最后几条命令中的服务名按实际 `docker compose ps` 输出调整。更新后建议重新进入后台复制 Agent 接入命令；旧机器上如果已经装过失败的 Agent 服务，可先在 Agent 机器执行：
+
+```bash
+systemctl disable --now stat_client.service
+```
+
+然后重新运行后台复制的新接入命令。
 
 `runtime/` 中可能出现：
 
@@ -312,7 +338,7 @@ curl -i http://127.0.0.1:8080/api/admin/settings
 
 未登录应返回 `401`。
 
-## 相关项目
+## 致谢
 
 - https://github.com/zdz/ServerStatus-Rust
 - https://github.com/BotoX/ServerStatus

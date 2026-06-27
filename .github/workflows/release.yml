@@ -5,204 +5,95 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.8.2"
+        required: true
+        type: string
+
+permissions:
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # --- macOS 编译 ---
-  macos:
-    runs-on: macos-latest
-    name: macos (${{ matrix.platform.target }})
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: true
-      matrix:
-        platform:
-          - target: "aarch64-apple-darwin"
-          - target: "x86_64-apple-darwin"
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Protoc
-        run: brew install protobuf
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform.target }}
-
-      - name: Build release
-        run: cargo build --release --locked --target ${{ matrix.platform.target }}
-
-      - name: Strip & UPX
-        continue-on-error: true
-        run: |
-          strip target/${{ matrix.platform.target }}/release/stat_server
-          strip target/${{ matrix.platform.target }}/release/stat_client
-        shell: bash
-
-      - name: Zip Release
-        uses: TheDoctor0/zip-release@0.7.6
-        with:
-          type: zip
-          filename: ServerStatus-${{ matrix.platform.target }}.zip
-          directory: ./
-          path: |
-            target/${{ matrix.platform.target }}/release/stat_server
-            target/${{ matrix.platform.target }}/release/stat_client
-            config.toml
-
-      - name: Upload binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: ServerStatus-${{ matrix.platform.target }}.zip
-          generate_release_notes: true
-          draft: false
-
-  # --- Linux Musl 编译 ---
-  linux:
+  linux-musl:
+    name: linux ${{ matrix.target }}
     runs-on: ubuntu-latest
-    name: linux (${{ matrix.platform.target }})
-    permissions:
-      contents: write
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        platform:
-          - target: "x86_64-unknown-linux-musl"
-          - target: "aarch64-unknown-linux-musl"
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
     container:
-      image: docker://ghcr.io/rust-cross/rust-musl-cross:${{ matrix.platform.target }}
+      image: ghcr.io/rust-cross/rust-musl-cross:${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Protoc & Utils
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install build utilities
         run: |
           apt-get update -y -qq
-          apt-get install -y -qq protobuf-compiler zip git llvm
+          apt-get install -y -qq protobuf-compiler zip git cmake make g++ llvm
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform.target }}
+          targets: ${{ matrix.target }}
 
-      - name: Build release
-        run: cargo build --release --locked --target ${{ matrix.platform.target }}
+      - name: Build release binaries
+        run: cargo build --release --locked --target ${{ matrix.target }} -p stat_server -p stat_client
 
-      - name: Strip & UPX
-        continue-on-error: true
-        uses: svenstaro/upx-action@v2
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir -p dist/server dist/client
+          cp target/${{ matrix.target }}/release/stat_server dist/server/stat_server
+          cp target/${{ matrix.target }}/release/stat_client dist/client/stat_client
+          cp config.toml dist/server/config.toml
+          cp systemd/stat_server.service dist/server/stat_server.service
+          cp systemd/stat_client.service dist/client/stat_client.service
+          chmod +x dist/server/stat_server dist/client/stat_client
+          (cd dist/server && zip -9 "../server-${{ matrix.target }}.zip" stat_server config.toml stat_server.service)
+          (cd dist/client && zip -9 "../client-${{ matrix.target }}.zip" stat_client stat_client.service)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            target/${{ matrix.platform.target }}/release/stat_server
-            target/${{ matrix.platform.target }}/release/stat_client
-          args: --best --lzma
+          name: linux-${{ matrix.target }}
+          path: dist/*.zip
 
-      - name: Zip Release
-        uses: TheDoctor0/zip-release@0.7.6
-        with:
-          type: zip
-          filename: ServerStatus-${{ matrix.platform.target }}.zip
-          directory: ./
-          path: |
-            target/${{ matrix.platform.target }}/release/stat_server
-            target/${{ matrix.platform.target }}/release/stat_client
-            config.toml
-
-      - name: Upload binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: ServerStatus-${{ matrix.platform.target }}.zip
-          generate_release_notes: true
-          draft: false
-
-  # --- Windows & Android 编译 ---
-  windows-or-linux-others:
-    name: Cross build for ${{ matrix.platform.target }}
-    runs-on: ${{ matrix.platform.os }}
-    permissions:
-      contents: write
-    strategy:
-      matrix:
-        platform:
-          - os: ubuntu-latest
-            target: aarch64-linux-android
-            suffix: ""
-            use-cross: true
-          - os: ubuntu-latest
-            target: armv7-unknown-linux-musleabihf
-            suffix: ""
-            use-cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            suffix: .exe
-            use-cross: false
-
+  publish:
+    name: publish release
+    runs-on: ubuntu-latest
+    needs: linux-musl
     steps:
-      - uses: actions/checkout@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
-      - name: Install Protoc
+      - name: Resolve release tag
+        id: release
+        shell: bash
         run: |
-          if [ "${{ matrix.platform.os }}" = "windows-latest" ]; then
-            choco install protoc --no-progress
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           else
-            sudo apt-get update && sudo apt-get install -y protobuf-compiler
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
-        shell: bash
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform.target }}
-
-      - name: Install Cross
-        if: matrix.platform.use-cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build release
-        run: |
-          if [ "${{ matrix.platform.use-cross }}" = "true" ]; then
-            cross build --locked --release --target=${{ matrix.platform.target }}
-          else
-            cargo build --locked --release --target=${{ matrix.platform.target }}
-          fi
-        shell: bash
-
-      - name: Strip & UPX
-        continue-on-error: true
-        uses: svenstaro/upx-action@v2
-        with:
-          files: |
-            target/${{ matrix.platform.target }}/release/stat_server${{matrix.platform.suffix}}
-            target/${{ matrix.platform.target }}/release/stat_client${{matrix.platform.suffix}}
-          args: --best --lzma
-
-      # 修复：显式拷贝文件到统一目录，避免 Windows 打包找不到路径
-      - name: Prepare Assets
-        run: |
-          mkdir -p ./assets/
-          cp target/${{ matrix.platform.target }}/release/stat_server${{matrix.platform.suffix}} ./assets/
-          cp target/${{ matrix.platform.target }}/release/stat_client${{matrix.platform.suffix}} ./assets/
-          cp config.toml ./assets/
-        shell: bash
-
-      - name: Zip Release
-        uses: TheDoctor0/zip-release@0.7.6
-        with:
-          type: zip
-          filename: ServerStatus-${{ matrix.platform.target }}.zip
-          directory: ./assets/
-          path: .
-
-      - name: Upload binaries to GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          tag_name: ${{ github.ref_name }}
-          files: ./assets/ServerStatus-${{ matrix.platform.target }}.zip
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ServerStatus-RustL ${{ steps.release.outputs.tag }}
+          files: dist/*.zip
+          fail_on_unmatched_files: true
           generate_release_notes: true
           draft: false

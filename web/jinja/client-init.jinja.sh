@@ -15,7 +15,7 @@ export SSR_CLIENT_OPTS='{{client_opts}}'
 export SSR_WORKSPACE={{workspace}}
 export SSR_CN={{cn}}
 export SSR_RELEASE_REPO=${SSR_RELEASE_REPO:-Luke9570/ServerStatus-RustL}
-export SSR_RELEASE_FALLBACK_REPO=${SSR_RELEASE_FALLBACK_REPO:-zdz/ServerStatus-Rust}
+export SSR_RELEASE_TAG=${SSR_RELEASE_TAG:-v{{pkg_version}}}
 
 Info="\033[32m[info]\033[0m"
 Error="\033[31m[err]\033[0m"
@@ -109,8 +109,8 @@ function install_deps() {
 
 function download_client_from_repo() {
     repo="$1"
-    url="https://github.com/${repo}/releases/download/v{{pkg_version}}/client-${arch}-unknown-linux-musl.zip"
-    say "download from ${repo}"
+    url="https://github.com/${repo}/releases/download/${SSR_RELEASE_TAG}/client-${arch}-unknown-linux-musl.zip"
+    say "download from ${repo} ${SSR_RELEASE_TAG}"
     if ! wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "${url}"; then
         say "download failed from ${repo}"
         return 1
@@ -129,13 +129,7 @@ function download_client() {
 
     say "start download the stat_client"
 
-    if ! download_client_from_repo "${SSR_RELEASE_REPO}"; then
-        if [ "${SSR_RELEASE_REPO}" = "${SSR_RELEASE_FALLBACK_REPO}" ]; then
-            err "failed to download stat_client from ${SSR_RELEASE_REPO}"
-        fi
-        say "fallback release repo: ${SSR_RELEASE_FALLBACK_REPO}"
-        download_client_from_repo "${SSR_RELEASE_FALLBACK_REPO}" || err "failed to download stat_client from ${SSR_RELEASE_FALLBACK_REPO}"
-    fi
+    download_client_from_repo "${SSR_RELEASE_REPO}" || err "failed to download stat_client from ${SSR_RELEASE_REPO} ${SSR_RELEASE_TAG}; please publish client-${arch}-unknown-linux-musl.zip in this GitHub release"
 
     say "download stat_client succ"
 
