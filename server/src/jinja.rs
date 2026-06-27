@@ -16,16 +16,19 @@ pub fn add_template(kind: &str, tag: &str, tpl: String) {
 
 pub fn render_template<'a>(kind: &'a str, tag: &'a str, ctx: Value, trim: bool) -> Result<String> {
     let name = format!("{kind}.{tag}");
-    Ok(JINJA_ENV
-        .lock().map_or_else(|err| {
+    Ok(JINJA_ENV.lock().map_or_else(
+        |err| {
             error!("render_template err => {err:?}");
             Ok(String::new())
-        }, |e| {
+        },
+        |e| {
             e.get_template(name.as_str()).map(|tmpl| {
-                tmpl.render(ctx).map_or_else(|err| {
+                tmpl.render(ctx).map_or_else(
+                    |err| {
                         error!("tmpl.render err => {err:?}");
                         String::new()
-                    }, |content| {
+                    },
+                    |content| {
                         if trim {
                             return content
                                 .split('\n')
@@ -35,7 +38,9 @@ pub fn render_template<'a>(kind: &'a str, tag: &'a str, ctx: Value, trim: bool) 
                                 .join("\n");
                         }
                         content
-                    })
+                    },
+                )
             })
-        })?)
+        },
+    )?)
 }

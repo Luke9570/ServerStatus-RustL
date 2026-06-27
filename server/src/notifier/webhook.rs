@@ -52,7 +52,9 @@ fn now_str() -> ImmutableString {
 
 #[allow(clippy::needless_pass_by_value)]
 fn to_json(o: Dynamic) -> ImmutableString {
-    serde_json::to_string(&o).map(std::convert::Into::into).unwrap_or_default()
+    serde_json::to_string(&o)
+        .map(std::convert::Into::into)
+        .unwrap_or_default()
 }
 
 impl Webhook {

@@ -20,13 +20,13 @@ use tokio::signal;
 use axum::{
     http::{Method, Uri},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
 
-mod assets;
 mod admin;
+mod assets;
 mod auth;
 mod config;
 mod expiry;
@@ -50,13 +50,11 @@ struct Args {
     config_test: bool,
     #[arg(long = "notify-test", help = "notify test, default:false")]
     notify_test: bool,
-    #[arg(long = "cloud", help = "cloud mode, load cfg from env var: SRV_CONF")]
-    cloud: bool,
 }
 
 fn create_app_router() -> Router {
     let cors_layer = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_origin(Any);
 
     Router::new()
@@ -64,7 +62,16 @@ fn create_app_router() -> Router {
         .route("/json/stats.json", get(http::get_stats_json)) // 兼容就旧主题
         // .route("/config.pub.json", get(http::get_site_config_json)) // TODO
         .route("/api/admin/authorize", post(jwt::authorize))
-        .route("/api/admin/settings", get(http::admin_settings).post(http::save_admin_settings))
+        .route(
+            "/api/admin/settings",
+            get(http::admin_settings).post(http::save_admin_settings),
+        )
+        .route("/api/admin/password", post(http::change_admin_password))
+        .route("/api/admin/deleted-hosts", delete(http::clear_deleted_hosts))
+        .route("/api/admin/deleted-hosts/{name}", delete(http::purge_deleted_host))
+        .route("/api/admin/access-command", get(http::admin_default_access_command))
+        .route("/api/admin/access-command/{gid}", get(http::admin_access_command))
+        .route("/api/admin/access-secret/{gid}", get(http::admin_access_secret))
         .route("/api/admin/{path}", get(http::admin_api)) // stats.json || config.json
         .route("/admin", get(assets::admin_index_handler))
         .route("/detail", get(http::get_detail))
@@ -121,12 +128,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     // config load
-    if let Some(cfg) = if args.cloud {
-        // export SRV_CONF=$(cat config.toml)
-        // echo "$SRV_CONF"
-        eprintln!("✨ run in cloud mode, load config from env");
-        config::from_env()
-    } else {
+    if let Some(cfg) = {
         eprintln!("✨ run in normal mode, load conf from local file `{}", &args.config);
         config::from_file(&args.config)
     } {

@@ -331,8 +331,9 @@ function get_status() {
         MIRROR="https://gh-proxy.com/"
     fi
     install_tool
-    rm -f *-unknown-*.zip stat_*
     cd /tmp || exit
+    rm -f "server-${arch}-unknown-linux-musl.zip" "client-${arch}-unknown-linux-musl.zip"
+    rm -f "stat_server" "stat_client" "stat_server.service" "stat_client.service"
 
     # 判断为空或者 "-a" "--all"，为空可以兼容前面的函数功能
     if [ -z "$1" ] || [ "$1" = "-a" ] || [ "$1" = "--all" ]; then
@@ -435,16 +436,16 @@ function uninstall_server() {
     systemctl stop stat_server
     systemctl disable stat_server
     systemctl daemon-reload
-    rm -rf $server_dir
-    rm -rf $server_conf
+    rm -f "$server_file" "$server_toml" "$server_conf"
+    echo -e "${Warning} 已保留目录 $server_dir，如需删除请手动检查后移除"
 }
 function uninstall_client() {
     echo -e "${Tip} 开始卸载 Client"
     systemctl stop stat_client
     systemctl disable stat_client
     systemctl daemon-reload
-    rm -rf $client_dir
-    rm -rf $client_conf
+    rm -f "$client_file" "$client_conf"
+    echo -e "${Warning} 已保留目录 $client_dir，如需删除请手动检查后移除"
 }
 
 function ssinstall() {

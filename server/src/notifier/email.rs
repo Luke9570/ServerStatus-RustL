@@ -18,6 +18,10 @@ fn default_expire_tpl() -> String {
     "{{config.title}}<pre>{{host.location}} {{host.name}} {{host.expire.label}}</pre><pre>Expire: {{host.expire.date}}</pre>".to_string()
 }
 
+fn default_health_tpl() -> String {
+    "{{config.title}}<pre>{{host.custom}}</pre>".to_string()
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Config {
     pub enabled: bool,
@@ -32,6 +36,8 @@ pub struct Config {
     pub custom_tpl: String,
     #[serde(default = "default_expire_tpl")]
     pub expire_tpl: String,
+    #[serde(default = "default_health_tpl")]
+    pub health_tpl: String,
 }
 
 pub struct Email {
@@ -45,6 +51,7 @@ impl Email {
         add_template(KIND, get_tag(&Event::NodeDown), o.config.offline_tpl.clone());
         add_template(KIND, get_tag(&Event::Custom), o.config.custom_tpl.clone());
         add_template(KIND, get_tag(&Event::Expire), o.config.expire_tpl.clone());
+        add_template(KIND, get_tag(&Event::Health), o.config.health_tpl.clone());
         o
     }
 }
@@ -107,7 +114,7 @@ impl crate::notifier::Notifier for Email {
             true,
         )
         .map(|content| match *e {
-            Event::NodeUp | Event::NodeDown | Event::Expire => {
+            Event::NodeUp | Event::NodeDown | Event::Expire | Event::Health => {
                 if !content.is_empty() {
                     self.send_notify(content).unwrap();
                 }

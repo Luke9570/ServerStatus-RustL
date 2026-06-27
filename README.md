@@ -1,569 +1,313 @@
-<p align="center">
-  <a href="https://github.com/zdz/ServerStatus-Rust">
-    <h1 align="center">✨ Rust 版 ServerStatus 云探针</h1>
-  </a>
-</p>
+# ServerStatus-RustL
 
-<div align="center">
-    <p>
-        <a href="https://github.com/zdz/ServerStatus-Rust/actions/workflows/release.yml">
-            <img src="https://github.com/zdz/ServerStatus-Rust/actions/workflows/release.yml/badge.svg" alt="Release"></a>
-        <a href="https://github.com/zdz/ServerStatus-Rust/issues">
-            <img src="https://img.shields.io/github/issues/zdz/ServerStatus-Rust"
-                  alt="GitHub issues">
-        </a>
-        <a href="https://github.com/zdz/ServerStatus-Rust/discussions">
-            <img src="https://img.shields.io/github/discussions/zdz/ServerStatus-Rust"
-                  alt="GitHub Discussions">
-        </a>
-        <a href="https://github.com/zdz/ServerStatus-Rust/releases">
-            <img src="https://img.shields.io/github/v/release/zdz/ServerStatus-Rust"
-                  alt="GitHub release (latest SemVer)">
-        </a>
-        <a href="https://github.com/zdz/ServerStatus-Rust/releases">
-            <img src="https://img.shields.io/github/downloads/zdz/ServerStatus-Rust/total" alt="GitHub all releases">
-        </a>
-    </p>
-</div>
+轻量 VPS 状态面板，基于 `ServerStatus-Rust` 分支继续开发。当前分支重点增强到期管理、后台配置、节点健康告警和 Telegram/Bark 通知，保持纯监控用途。
 
-<img width="1317" alt="image" src="https://user-images.githubusercontent.com/152173/206825541-6eaeb856-0c03-479a-b07e-006b60b41c02.png">
-<img width="1436" alt="image" src="https://user-images.githubusercontent.com/152173/165958225-25fc8fda-5798-42f8-bac5-72d778c0bab5.png">
+## 功能概览
 
+- Rust 服务端与客户端，支持 HTTP/gRPC 上报。
+- 主页展示在线状态、流量、负载、CPU、内存、硬盘和 VPS 剩余天数。
+- Nezha 风格到期管理：到期日期、永久/免费、自动续期周期和剩余天数展示。
+- 后台管理：服务器、服务器分组、告警规则、通知方式、接入地址、到期提醒和密码修改。
+- 动态接入命令：后台登录后生成 Agent 一键接入脚本，支持单独配置面板访问地址和 Agent 上报地址。
+- 告警规则：离线、CPU、内存、硬盘、负载持续超阈值提醒，可限定服务器或服务器分组。
+- 通知方式：Telegram 与 Bark，支持到期提醒模板和健康告警模板。
+- 运行时覆盖配置写入本地 `admin-overrides.json`，不需要修改 `config.toml` 才能调整大部分后台配置。
 
+安全边界：
 
-<h2>Table of Contents</h2>
+- 不包含 SSH、远程 shell、远程任务执行、终端或命令下发能力。
+- 后台 API 使用 JWT 保护，未登录访问应返回 `401`。
+- `/api/admin/config.json` 和 `/api/admin/settings` 给前端的数据会脱敏，不返回 agent/group password、`admin_pass`、`jwt_secret`、Telegram token、Bark device key。
+- 不要提交 `admin-overrides.json`、`runtime/`、真实 `admin_pass`、`jwt_secret`、Telegram token、Bark device key。
 
-- [1. 介绍](#1-介绍)
-  - [🍀 主题](#-主题)
-- [2. 安装部署](#2-安装部署)
-  - [2.1 快速体验](#21-快速体验)
-  - [2.2 快速部署](#22-快速部署)
-  - [2.3 服务管理脚本](#23-服务管理脚本)
-  - [2.4 Railway 部署](#24-railway-部署)
-  - [2.5 Heroku 部署](#25-heroku-部署)
-- [3. 服务端说明](#3-服务端说明)
-  - [3.1 配置文件 `config.toml`](#31-配置文件-configtoml)
-  - [3.2 服务端运行](#32-服务端运行)
-- [4. 客户端说明](#4-客户端说明)
-  - [4.1 Rust 版 Client](#41-rust-版-client)
-  - [4.2 Python 版 Client](#42-python-版-client)
-- [5. 开启 `vnstat` 支持](#5-开启-vnstat-支持)
-- [6. FAQ](#6-faq)
-- [7. 相关项目](#7-相关项目)
-- [8. 最后](#8-最后)
+## 项目结构
 
-## 1. 介绍
-  `ServerStatus` 威力加强版，保持轻量和简单部署，增加以下主要特性：
-
-- 使用 `rust` 完全重写 `server`、`client`，单个执行文件部署
-- 多系统支持 `Linux`、`MacOS`、`Windows`、`Android`、`Raspberry Pi`
-- 支持上下线和简单自定义规则告警 (`telegram`、`wechat`、`email`、`webhook`)
-- 支持 `http` 协议上报，方便部署到各免费容器服务和配合 `cf` 等优化上报链路
-- 支持 `cloudflare tunnels` 和 `mTLS` 部署
-- 支持主机分组动态注册，简化配置
-- 支持 `vnstat` 统计月流量，重启不丢流量数据
-- 支持 `railway` 快速部署
-- 支持 `systemd` 开机自启
-- 其它功能，如 🗺️  见 [wiki](https://github.com/zdz/ServerStatus-Rust/wiki)
-
-演示：[ssr.rs](https://ssr.rs) | [cn dns](https://ck.ssr.rs)
-|
-下载：[Releases](https://github.com/zdz/ServerStatus-Rust/releases)
-|
-[Changelog](https://github.com/zdz/ServerStatus-Rust/releases)
-|
-反馈：[Discussions](https://github.com/zdz/ServerStatus-Rust/discussions)
-
-📚 完整文档迁移至 [doc.ssr.rs](https://doc.ssr.rs)
-
-📚 保姆级教程 [Google](https://www.google.com/search?q=%22serverstatus-rust%22)
-|
-[Bing](https://www.bing.com/search?q=%22serverstatus-rust%22)
-
-### 🍀 主题
-
-如果你觉得你创造/修改的主题还不错，欢迎分享/PR，前端单独部署方法参考 [#37](https://github.com/zdz/ServerStatus-Rust/discussions/37)
-
-<details>
-  <summary>ServerStatus-theme 主题</summary>
-
-作者 [@JingBh](https://github.com/JingBh)
-👉 [主题地址](https://github.com/JingBh/ServerStatus-theme)
-支持快速部署一键命令生成
-
-| <img width="1269" alt="image" src="https://github.com/zdz/ServerStatus-Rust/assets/152173/33eb8685-b0ed-4548-92af-8cfdded7d011"> | <img width="596" alt="image" src="https://github.com/zdz/ServerStatus-Rust/assets/152173/15e9c405-6491-4f41-ad0e-68aae96d709c"> |
-|-|-|
-
-[演示：Demo](https://status.jingbh.cloud)
-
-</details>
-
-<details>
-  <summary>ServerStatus-Theme-Light 主题</summary>
-
-👉 [主题地址](https://github.com/orilights/ServerStatus-Theme-Light)
-作者 [@orilights](https://github.com/orilights)
-
-<img width="1836" alt="image" src="https://github.com/zdz/ServerStatus-Rust/assets/152173/35fdd138-31b8-46d0-8ea8-c2d4e7ef2b52">
-
-[演示：Demo](https://sstl-demo.orilight.top)
-
-</details>
-
-<details>
-  <summary>Hotaru 主题</summary>
-
-Hotaru 主题由 [@HinataKato](https://github.com/HinataKato) 修改提供，[主题地址](https://github.com/HinataKato/hotaru_theme_for_RustVersion)
-
-<img width="1202" alt="image" src="https://user-images.githubusercontent.com/152173/167900971-5ef0c23a-af43-4f52-aab5-d58e4a66c8ea.png">
-
-</details>
-
-<details>
-  <summary>ServerStatus-web 主题</summary>
-
-ServerStatus-web 主题由 [@mjjrock](https://github.com/mjjrock) 修改提供，[主题地址](https://github.com/mjjrock/ServerStatus-web)
-
-<img width="1425" alt="image" src="https://user-images.githubusercontent.com/102237118/171837653-3a5b2cd6-bf02-4602-a132-2c80a6707f68.png">
-
-</details>
-
-<details>
-  <summary>ServerStatus-nezha 主题</summary>
-
-ServerStatus-nezha 主题由 [@snowie2000](https://github.com/snowie2000) 修改提供，类似于哪吒探针v1，[主题地址](https://github.com/snowie2000/serverstatus-nezha-theme)
-
-<img width="1425" alt="image" src="https://github.com/user-attachments/assets/2f0a9ca1-0d7d-472c-bf0d-eada396f6219">
-
-</details>
-
-
-<details>
-  <summary>v1.5.7 版本主题</summary>
-
-[演示：Demo](https://tz-rust.vercel.app)
-
-<img width="1215" alt="image" src="https://user-images.githubusercontent.com/152173/165957689-d35714a9-f7f8-49f7-9573-97d4cf3c2f79.png">
-</details>
-
-## 2. 安装部署
-
-### 2.1 快速体验
-```bash
-# for CentOS/Debian/Ubuntu x86_64
-mkdir -p /opt/ServerStatus && cd /opt/ServerStatus
-# apt install -y unzip / yum install -y unzip
-wget --no-check-certificate -qO one-touch.sh 'https://raw.githubusercontent.com/zdz/ServerStatus-Rust/master/scripts/one-touch.sh'
-bash -ex one-touch.sh
-# 部署完毕，打开 http://127.0.0.1:8080/ 或 http://<你的IP>:8080/
-# 自定义部署可参照 scripts/one-touch.sh 脚本
+```text
+server/                 Rust 服务端
+client/                 Rust Agent
+common/                 gRPC/protobuf 公共定义
+web/                    已构建的主页与后台静态资源
+web/jinja/              Agent 一键接入脚本模板
+scripts/                systemd 安装/管理辅助脚本
+systemd/                stat_server/stat_client systemd 示例
+config.toml             示例配置
+docker-compose.yml      本地自托管 Docker Compose 示例
 ```
 
-### 2.2 快速部署
+关键文件：
 
-👉 [快速部署](https://doc.ssr.rs/rapid_deploy)
+- `server/src/admin.rs`：后台覆盖配置、密码哈希、运行时设置持久化。
+- `server/src/http.rs`：HTTP 页面与后台受保护 API。
+- `server/src/jwt.rs`：后台登录 JWT。
+- `server/src/stats.rs`：节点状态、覆盖配置、排序、到期提醒和健康告警。
+- `server/src/expiry.rs`：到期日期解析、自动续期推算、状态文案。
+- `web/admin.html`、`web/static/js/admin.js`、`web/static/css/admin.css`：后台 UI。
+- `web/static/js/expiry.js`、`web/static/css/expiry.css`：主页到期信息展示。
 
-### 2.3 服务管理脚本
-
-<details>
-  <summary>服务管理脚本说明</summary>
-
-由 [@Colsro](https://github.com/Colsro) &
-[@Yooona-Lim](https://github.com/Yooona-Lim)  贡献
+## 本地验证
 
 ```bash
-# 下载脚本
-wget --no-check-certificate -qO status.sh 'https://raw.githubusercontent.com/zdz/ServerStatus-Rust/master/scripts/status.sh'
-
-# 安装 服务端
-bash status.sh -i -s
-
-# 安装 客户端
-bash status.sh -i -c
-# or
-bash status.sh -i -c protocol://username:password@master:port
-# eg:
-bash status.sh -i -c grpc://h1:p1@127.0.0.1:9394
-bash status.sh -i -c http://h1:p1@127.0.0.1:8080
-
-# 更多用法：
-❯ bash status.sh
-
-help:
-    -i,--install    安装 Status
-        -i -s           安装 Server
-        -i -c           安装 Client
-        -i -c conf      自动安装 Client
-    -up,--upgrade   升级 Status
-        -up -s          升级 Server
-        -up -c          升级 Client
-        -up -a          升级 Server和Client
-    -un,--uninstall  卸载 Status
-        -un -s           卸载 Server
-        -un -c           卸载 Client
-        -un -a           卸载 Server and Client
-    -rc,--reconfig      更改 Status 配置
-        -rc          更改 Client 配置
-        -rc conf         自动更改 Client配置
-    -s,--server     管理 Status 运行状态
-        -s {status|start|stop|restart}
-    -c,--client     管理 Client 运行状态
-        -c {status|start|stop|restart}
-    -b,--bakup      备份 Status
-        -b -s          备份 Server
-        -b -c          备份 Client
-        -b -a          备份 Server and Client
-    -rs,--restore    恢复 Status
-        -rs -s          恢复 Server
-        -rs -c          恢复 Client
-        -rs -a          恢复 Server and Client
-    -h,--help       查看帮助
-若无法访问 Github:
-    CN=true bash status.sh args
+cargo check -p stat_server --locked
+cargo test -p stat_server --locked
+cargo build -p stat_server -p stat_client --locked
+./target/debug/stat_server -c config.toml -t
 ```
 
-</details>
+启动服务端：
 
-### 2.4 Railway 部署
+```bash
+./target/debug/stat_server -c config.toml
+```
 
-懒得配置 `Nginx`，`SSL` 证书？试试
-[在 Railway 部署 Server](https://github.com/zdz/ServerStatus-Rust/wiki/Railway)
+示例 Agent：
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template/kzT46l?referralCode=pJYbdU)
+```bash
+./target/debug/stat_client \
+  -a http://127.0.0.1:8080/report \
+  -g renew \
+  -p pp \
+  --alias demo-agent-1 \
+  --disable-ping \
+  --disable-extra \
+  --disable-tupd \
+  --interval 1
+```
 
-### 2.5 Heroku 部署
+访问：
 
-[如何在 Heroku 上部署 Rust 版 ServerStatus 云探针](https://github.com/zdz/ServerStatus-Rust/blob/master/heroku/README.md)
+- 主页：http://127.0.0.1:8080/
+- 后台：http://127.0.0.1:8080/admin
 
-## 3. 服务端说明
+`config.toml` 中 `admin_pass` 或 `jwt_secret` 留空时，服务启动会在日志中生成随机后台密码/密钥。正式部署请设置强随机值：
 
-### 3.1 配置文件 `config.toml`
+```bash
+openssl rand -base64 32
+```
+
+## 配置要点
+
+### 后台登录
+
 ```toml
-# 侦听地址, ipv6 使用 [::]:9394
-grpc_addr = "0.0.0.0:9394"
-http_addr = "0.0.0.0:8080"
-# 默认30s无上报判定下线
-offline_threshold = 30
-
-# 管理员账号,不设置默认随机生成，用于查看 /detail, /map
-admin_user = ""
+jwt_secret = ""
+admin_user = "admin"
 admin_pass = ""
+```
 
-# hosts 跟 hosts_group 两种配置模式任挑一种配置即可
-# name 主机唯一标识，不可重复，alias 为展示名
-# notify = false 单独禁止单台机器的告警，一般针对网络差，频繁上下线
-# monthstart = 1 没启用vnstat时，表示月流量从每月哪天开始统计
-# disabled = true 单机禁用
-# location 支持国旗 emoji https://emojixd.com/group/flags
-# 或国家缩写，如 cn us 等等，所有国家见目录 web/static/flags
-# 自定义标签 labels = "os=centos;ndd=2022/11/25;spec=2C/4G/60G;"
-# os 标签可选，不填则使用上报数据，ndd(next due date) 下次续费时间, spec 为主机规格
-# os 可用值 centos debian ubuntu alpine pi arch windows linux
+后台修改密码后，新密码会以 PBKDF2 哈希写入 `admin-overrides.json`，不会明文写入 `config.toml`。修改密码会提升会话版本，使旧 JWT 失效。
+
+### 静态服务器配置
+
+```toml
 hosts = [
-  {name = "h1", password = "p1", alias = "n1", location = "🏠", type = "kvm", labels = "os=arch;ndd=2022/11/25;spec=2C/4G/60G;"},
-  {name = "h2", password = "p2", alias = "n2", location = "🏢", type = "kvm", disabled = false},
-  {name = "h3", password = "p3", alias = "n3", location = "🏡", type = "kvm", monthstart = 1},
-  {name = "h4", password = "p4", alias = "n4", location = "cn", type = "kvm", notify = true, labels = "ndd=2022/11/25;spec=2C/4G/60G;"},
+  { name = "h1", password = "p1", alias = "n1", location = "us", type = "kvm", labels = "spec=2C/4G/60G;" },
 ]
+```
 
-# 动态注册模式，不再需要针对每一个主机做单独配置
-# gid 为模板组id, 动态注册唯一标识，不可重复
+### 动态接入组
+
+```toml
 hosts_group = [
-  # 可以按国家地区或用途来做分组
-  {gid = "g1", password = "pp", location = "🏠", type = "kvm", notify = true},
-  {gid = "g2", password = "pp", location = "🏢", type = "kvm", notify = true},
-  # 例如不发送通知可以单独做一组
-  {gid = "silent", password = "pp", location = "🏡", type = "kvm", notify = false},
+  { gid = "renew", password = "pp", location = "us", type = "kvm", labels = "spec=2C/4G/60G;" },
 ]
-# 动态注册模式下，无效数据清理间隔，默认 30s
-group_gc = 30
+```
 
-# 不开启告警，可忽略后面配置，或者删除不需要的通知方式
-# 告警间隔默认为30s
-notify_interval = 30
-# https://core.telegram.org/bots/api
-# https://jinja.palletsprojects.com/en/3.0.x/templates/#if
+后台“接入服务器”会自动生成接入密钥和一键脚本。若面板经过 CDN，而 Agent 不能通过 CDN 上报，请在后台“设置”里分别填写：
+
+- 面板访问地址：给用户浏览器访问后台/主页。
+- Agent 上报地址：给 Agent 上报 `/report`。
+
+### VPS 到期信息
+
+可使用以下来源之一：
+
+- `host.expire`
+- `host.billing.end_date`
+- `labels` 中的 `ndd=2026-12-31`
+
+自动续期示例：
+
+```toml
+{ name = "vps-1", password = "p1", billing = { end_date = "2026-12-31", auto_renewal = "1", cycle = "Year", amount = "200EUR" } }
+```
+
+永久或免费：
+
+```toml
+{ name = "lifetime", password = "p1", expire = "permanent", billing = { amount = "free" } }
+```
+
+后台也可以直接覆盖服务器的到期类型、周期、金额和提醒开关。
+
+### 到期提醒
+
+```toml
+[expire_notify]
+enabled = false
+days = [30, 14, 7, 3, 1, 0]
+interval = 86400
+```
+
+提醒会复用已启用的 Telegram/Bark 通道。
+
+### 健康告警
+
+告警规则在后台配置，不需要写入 `config.toml`。支持：
+
+- 离线超过指定秒数。
+- CPU/内存/硬盘使用率持续超过阈值。
+- 1/5/15 分钟负载持续超过阈值。
+- 限定到单台服务器或服务器分组。
+- 选择已启用的 Telegram/Bark 通知方式。
+
+离线告警会使用持续时间，避免短时丢包或抖动导致频繁误报。
+
+### Telegram
+
+```toml
 [tgbot]
-# 开关 true 打开
 enabled = false
 bot_token = "<tg bot token>"
 chat_id = "<chat id>"
-# host 可用字段见 payload.rs 文件 HostStat 结构, {{host.xxx}} 为占位变量
-# 例如 host.name 可替换为 host.alias，大家根据自己的喜好来编写通知消息
-# {{ip_info.query}} 主机 ip,  {{sys_info.host_name}} 主机 hostname
-title = "❗<b>Server Status</b>"
-online_tpl =  "{{config.title}} \n😆 {{host.location}} {{host.name}} 主机恢复上线啦"
-offline_tpl = "{{config.title}} \n😱 {{host.location}} {{host.name}} 主机已经掉线啦"
-# custom 模板置空则停用自定义告警，只保留上下线通知
-custom_tpl = """
-{% if host.memory_used / host.memory_total > 0.5  %}
-<pre>😲 {{host.name}} 主机内存使用率超50%, 当前{{ (100 * host.memory_used / host.memory_total) | round }}%  </pre>
-{% endif %}
-
-{% if host.hdd_used / host.hdd_total  > 0.5  %}
-<pre>😲 {{host.name}} 主机硬盘使用率超50%, 当前{{ (100 * host.hdd_used / host.hdd_total) | round }}% </pre>
-{% endif %}
+title = "ServerStatus"
+expire_tpl = """
+{{config.title}}
+<pre>VPS 到期提醒: {{host.alias}}</pre>
+<pre>到期: {{host.expire.date}} / {{host.expire.label}}</pre>
 """
-
-# wechat, email, webhook 等其它通知方式 配置详细见 config.toml
+health_tpl = """
+{{config.title}}
+<pre>{{host.custom}}</pre>
+"""
 ```
 
-### 3.2 服务端运行
-```bash
-# systemd 方式， 参照 scripts/one-touch.sh 脚本 (推荐)
+### Bark
 
-# 💪 手动方式
-# help
-./stat_server -h
-# 手动运行
-./stat_server -c config.toml
-# 或
-RUST_BACKTRACE=1 RUST_LOG=trace ./stat_server -c config.toml
-
-# 测试配置文件是否有效
-./stat_server -c config.toml -t
-# 根据配置发送测试消息，验证通知是否生效
-./stat_server -c config.toml --notify-test
-
-# 🐳 docker 方式
-wget --no-check-certificate -qO docker-compose.yml 'https://raw.githubusercontent.com/zdz/ServerStatus-Rust/master/docker-compose.yml'
-wget --no-check-certificate -qO config.toml 'https://raw.githubusercontent.com/zdz/ServerStatus-Rust/master/config.toml'
-touch stats.json
-docker-compose up -d
+```toml
+[bark]
+enabled = false
+server = "https://api.day.app"
+device_key = "<bark device key>"
+title = "ServerStatus"
+group = "ServerStatus"
+expire_tpl = """
+VPS 到期提醒: {{host.alias}}
+到期: {{host.expire.date}} / {{host.expire.label}}
+"""
+health_tpl = """
+{{host.custom}}
+"""
 ```
 
-## 4. 客户端说明
+后台保存 Telegram/Bark 时，token/device key 留空表示保持原值。
 
-<details>
-  <summary>系统版本&架构</summary>
+## Agent
 
-|  OS            | Release  |
-|  ----          | ----     |
-| Linux x86_64   | x86_64-unknown-linux-musl |
-| Linux arm64    | aarch64-unknown-linux-musl |
-| MacOS x86_64   | x86_64-apple-darwin |
-| MacOS arm64    | aarch64-apple-darwin |
-| Windows x86_64 | x86_64-pc-windows-msvc |
-| Raspberry Pi   | armv7-unknown-linux-musleabihf |
-| Android 64bit  | aarch64-linux-android |
-| Android 32bit  | armv7-linux-androideabi |
+HTTP 上报：
 
-</details>
-
-### 4.1 Rust 版 Client
 ```bash
-# 公网环境建议 headscale/nebula 组网或走 https, 使用 nginx 对 server 套 ssl 和自定义 location /report
-# alpine linux 需要安装相关命令 apk add procps iproute2 coreutils
-# 如果 Rust 版客户端在你的系统无法使用，请切换到下面 4.2 Python 跨平台版本
-
-# systemd 方式， 参照 scripts/one-touch.sh 脚本 (推荐)
-
-# 💪 手动方式
-# Rust 版本 Client
-./stat_client -h
 ./stat_client -a "http://127.0.0.1:8080/report" -u h1 -p p1
-# 或
-./stat_client -a "grpc://127.0.0.1:9394" -u h1 -p p1
-# 不同的主机可以运行相同的命令注册到同一组
-./stat_client -a "http://127.0.0.1:8080/report" -g g1 -p pp --alias "$(hostname)"
-
-# rust client 可用参数
-./stat_client -h
-OPTIONS:
-    -6, --ipv6                   ipv6 only, default:false
-    -a, --addr <ADDR>            [default: http://127.0.0.1:8080/report]
-        --alias <ALIAS>          alias for host [default: unknown]
-        --cm <CM_ADDR>           China Mobile probe addr [default: cm.tz.cloudcpp.com:80]
-        --ct <CT_ADDR>           China Telecom probe addr [default: ct.tz.cloudcpp.com:80]
-        --cu <CU_ADDR>           China Unicom probe addr [default: cu.tz.cloudcpp.com:80]
-        --disable-extra          disable extra info report, default:false
-        --disable-notify         disable notify, default:false
-        --disable-ping           disable ping, default:false
-        --disable-tupd           disable t/u/p/d, default:false
-    -g, --gid <GID>              group id [default: ]
-    -h, --help                   Print help information
-        --ip-info                show ip info, default:false
-        --ip-source <IP_SOURCE>  ip info source [env: SSR_IP_SOURCE=] [default: ip-api.com]
-        --sys-info               show sys info, default:false
-        --json                   use json protocol, default:false
-        --location <LOCATION>    location [default: ]
-    -n, --vnstat                 enable vnstat, default:false
-        --vnstat-mr <VNSTAT_MR>  vnstat month rotate 1-28 [default: 1]
-    -p, --pass <PASS>            password [default: p1]
-    -t, --type <HOST_TYPE>       host type [default: ]
-    -u, --user <USER>            username [default: h1]
-    -V, --version                Print version information
-    -w, --weight <WEIGHT>        weight for rank [default: 0]
-
-# 一些参数说明
---ip-info       # 显示本机ip信息后立即退出，目前使用 ip-api.com 数据
---ip-source     # 指定 ip 信息源，ip-api.com / ip.sb / ipapi.co / myip.la
---sys-info      # 显示本机系统信息后立即退出
---disable-extra # 不上报系统信息和IP信息
---disable-ping  # 停用三网延时和丢包率探测
---disable-tupd  # 不上报 tcp/udp/进程数/线程数，减少CPU占用
--w, --weight    # 排序加分，微调让主机靠前显示，无强迫症可忽略
--g, --gid       # 动态注册的组id
---alias         # 动态注册模式下，指定主机的展示名字
-# 总流量，网卡流量/网速统计
--i, --iface         # 非空时，只统计指定网口
--e, --exclude-iface # 排除指定网口，默认排除 "lo,docker,vnet,veth,vmbr,kube,br-"
 ```
 
-### 4.2 Python 版 Client
-
-<details>
-  <summary> Python 版 Client 说明</summary>
+动态接入组：
 
 ```bash
-# Python 版本 Client 依赖安装
-## Centos
-yum -y install epel-release
-yum -y install python3-pip gcc python3-devel
-python3 -m pip install psutil requests py-cpuinfo
-
-## Ubuntu/Debian
-apt -y install python3-pip
-python3 -m pip install psutil requests py-cpuinfo
-
-## Alpine linux
-apk add wget python3 py3-pip gcc python3-dev musl-dev linux-headers
-apk add procps iproute2 coreutils
-python3 -m pip install psutil requests py-cpuinfo
-
-wget --no-check-certificate -qO stat_client.py 'https://raw.githubusercontent.com/zdz/ServerStatus-Rust/master/client/stat_client.py'
-
-## Windows
-# 安装 python 3.10 版本，并设置环境变量
-# 命令行执行 pip install psutil requests
-# 下载 https://raw.githubusercontent.com/zdz/ServerStatus-Rust/master/client/stat_client.py
-pip install psutil requests py-cpuinfo
-
-python3 stat_client.py -h
-python3 stat_client.py -a "http://127.0.0.1:8080/report" -u h1 -p p1
+./stat_client -a "http://127.0.0.1:8080/report" -g renew -p pp --alias "$(hostname)"
 ```
-</details>
 
-## 5. 开启 `vnstat` 支持
-[vnstat](https://zh.wikipedia.org/wiki/VnStat) 是Linux下一个流量统计工具，开启 `vnstat` 后，`server` 完全依赖客户机的 `vnstat` 数据来显示月流量和总流量，优点是重启不丢流量数据。
+常用参数：
 
-<details>
-  <summary>开启 vnstat 设置</summary>
+```text
+--disable-ping      停用三网延时和丢包率探测
+--disable-tupd      不上报 TCP/UDP/进程数/线程数
+--disable-extra     不上报系统信息和 IP 信息
+--vnstat            使用 vnstat 统计流量
+--location          手动指定位置
+--type              手动指定架构/类型
+-w, --weight        排序权重
+```
+
+后台生成的一键脚本来自 `web/jinja/client-init.jinja.sh`。默认从 GitHub Releases 下载 `stat_client`，可通过环境变量覆盖下载仓库：
 
 ```bash
-# 在client端安装 vnstat
-## Centos
-sudo yum install epel-release -y
-sudo yum install -y vnstat
-## Ubuntu/Debian
-sudo apt install -y vnstat
-
-# 修改 /etc/vnstat.conf
-# BandwidthDetection 0
-# MaxBandwidth 0
-# 默认不是 eth0 网口的需要置空 Interface 来自动选择网口
-# 没报错一般不需要改
-# Interface ""
-systemctl restart vnstat
-
-# 确保 version >= 2.6
-vnstat --version
-# 测试查看月流量 (刚安装可能需等一小段时间来采集数据)
-vnstat -m
-vnstat --json m
-
-# client 使用 -n 参数开启 vnstat 统计
-./stat_client -a "grpc://127.0.0.1:9394" -u h1 -p p1 -n
-# 或
-python3 stat_client.py -a "http://127.0.0.1:8080/report" -u h1 -p p1 -n
+SSR_RELEASE_REPO=Luke9570/ServerStatus-RustL curl -fsSL "https://example.com/i?..." | bash
 ```
-</details>
 
-## 6. FAQ
+## 自托管部署
 
-<details>
-  <summary>如何使用自定义主题</summary>
-
-更简单的方式 👉 [#37](https://github.com/zdz/ServerStatus-Rust/discussions/37)
-
-```nginx
-server {
-  # ssl, domain 等其它 nginx 配置
-
-  # 自动反代所有请求
-  location @proxy {
-    proxy_set_header Host              $host;
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-Host  $host;
-    proxy_set_header X-Forwarded-Port  $server_port;
-		proxy_set_header Upgrade $http_upgrade;
-		proxy_set_header Connection $http_connection;
-
-    proxy_pass http://127.0.0.1:8080;
-  }
-
-  # 如果主题存在相关文件则使用，否则回退到上游
-  location / {
-    root   /opt/ServerStatus/web; # 你自己修改的主题目录
-    index  index.html index.htm;
-    try_files $uri $uri/ @proxy;
-  }
-}
-```
-</details>
-
-<details>
-  <summary>如何源码编译</summary>
+### 二进制 + systemd
 
 ```bash
-#
-cargo install stat_server
-cargo install stat_client
-# or
-# 按提示安装 rust 编译器
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-yum install -y openssl-devel
-git clone https://github.com/zdz/ServerStatus-Rust.git
-cd ServerStatus-Rust
-cargo build --release
-# 编译好的文件目录 target/release
+cargo build -p stat_server -p stat_client --release --locked
+install -Dm755 target/release/stat_server /opt/ServerStatus/stat_server
+install -Dm755 target/release/stat_client /opt/ServerStatus/stat_client
+install -Dm644 config.toml /opt/ServerStatus/config.toml
+install -Dm644 systemd/stat_server.service /etc/systemd/system/stat_server.service
+systemctl daemon-reload
+systemctl enable --now stat_server
 ```
-</details>
 
-<details>
-  <summary>如何自定义 ping 地址</summary>
+按需修改 `systemd/stat_client.service` 后安装到 Agent 机器。
+
+### Docker Compose
+
+当前 Compose 使用本地源码构建镜像，并把运行时文件放在 `runtime/`：
 
 ```bash
-# 例如自定义移动探测地址，用 --cm 指定地址
-./stat_client -a "grpc://127.0.0.1:9394" -u h1 -p p1 --cm=cm.tz.cloudcpp.com:80
-
-# 电信联通参数可以使用 -h 命令查看
-./stat_client -h
-OPTIONS:
-    --cm <CM_ADDR>    China Mobile probe addr [default: cm.tz.cloudcpp.com:80]
-    --ct <CT_ADDR>    China Telecom probe addr [default: ct.tz.cloudcpp.com:80]
-    --cu <CU_ADDR>    China Unicom probe addr [default: cu.tz.cloudcpp.com:80]
+mkdir -p runtime
+docker compose up -d --build
 ```
-</details>
 
-<details>
-  <summary>关于这个轮子</summary>
+`runtime/` 中可能出现：
 
-  之前一直在使用 `Prometheus` + `Grafana` + `Alertmanager` + `node_exporter` 做VPS监控，这也是业界比较成熟的监控方案，用过一段时间后，发现非生产环境，很多监控指标都用不上，运维成本有点大。
-  而 `ServerStatus` 很好，足够简单和轻量，一眼可以看尽所有小机机，只是 `c++` 版本很久没迭代过，自己的一些需求在原版上不是很好修改，如自带 `tcp` 上报对跨区机器不是很友好，也不方便对上报的链路做优化 等等。这是学习 `Rust` 练手的小项目，所以不会增加复杂功能，保持小而美，简单部署，配合 [Uptime Kuma](https://github.com/louislam/uptime-kuma) 基本上可以满足个人大部分监控需求。
+- `admin-overrides.json`
+- `stats.json`
+- 其它运行时状态
 
-</details>
+这些文件包含本地配置或状态，不应提交到 Git。
 
-## 7. 相关项目
+## 前端与静态资源
+
+主页和后台静态资源位于 `web/`，由 `server/src/assets.rs` 嵌入到 `stat_server` 二进制中。修改 `web/admin.html`、`web/static/js/*.js`、`web/static/css/*.css` 后，需要重新构建服务端：
+
+```bash
+cargo build -p stat_server --locked
+```
+
+## 运行时文件
+
+不要提交以下文件或目录：
+
+```text
+admin-overrides.json
+runtime/
+stats.json
+tls/
+target/
+```
+
+## 维护检查
+
+提交前建议运行：
+
+```bash
+cargo check -p stat_server --locked
+cargo test -p stat_server --locked
+cargo build -p stat_server -p stat_client --locked
+git diff --check
+```
+
+后台接口安全检查：
+
+```bash
+curl -i http://127.0.0.1:8080/api/admin/settings
+```
+
+未登录应返回 `401`。
+
+## 相关项目
+
+- https://github.com/zdz/ServerStatus-Rust
 - https://github.com/BotoX/ServerStatus
 - https://github.com/cppla/ServerStatus
-- https://github.com/mojeda/ServerStatus
 - https://github.com/cokemine/ServerStatus-Hotaru
-- https://github.com/ToyoDAdoubiBackup/ServerStatus-Toyo
-
-## 8. 最后
-
-    很高兴我的代码能跑在你的服务器上，如果对你有帮助的话，欢迎留下你的 star ⭐ 支持一下
-

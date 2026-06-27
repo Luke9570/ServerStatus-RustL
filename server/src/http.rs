@@ -9,14 +9,16 @@ use axum::{
 use minijinja::context;
 use prettytable::Table;
 use prost::Message;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use stat_common::{server_status::StatRequest, utils::bytes2human};
 
-use crate::auth;
 use crate::admin;
+use crate::auth;
 use crate::jinja;
 use crate::jwt;
 use crate::G_CONFIG;
@@ -59,19 +61,16 @@ pub async fn admin_settings(_claims: jwt::Claims) -> Json<Value> {
     Json(json!({
         "code": 0,
         "message": "ok",
-        "data": admin::snapshot(),
+        "data": admin::public_snapshot(),
     }))
 }
 
-pub async fn save_admin_settings(
-    _claims: jwt::Claims,
-    Json(payload): Json<admin::AdminData>,
-) -> impl IntoResponse {
+pub async fn save_admin_settings(_claims: jwt::Claims, Json(payload): Json<admin::AdminData>) -> impl IntoResponse {
     match admin::replace(payload) {
-        Ok(data) => Json(json!({
+        Ok(_) => Json(json!({
             "code": 0,
             "message": "saved",
-            "data": data,
+            "data": admin::public_snapshot(),
         }))
         .into_response(),
         Err(err) => (
@@ -83,6 +82,331 @@ pub async fn save_admin_settings(
         )
             .into_response(),
     }
+}
+
+pub async fn purge_deleted_host(_claims: jwt::Claims, Path(name): Path<String>) -> impl IntoResponse {
+    purge_deleted_hosts(vec![name])
+}
+
+pub async fn clear_deleted_hosts(_claims: jwt::Claims) -> impl IntoResponse {
+    purge_deleted_hosts(admin::snapshot().deleted_hosts)
+}
+
+fn purge_deleted_hosts(names: Vec<String>) -> Response {
+    let purge_set: HashSet<String> = names
+        .iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    match admin::forget_deleted_hosts(&names) {
+        Ok(data) => {
+            if let Some(stats_mgr) = G_STATS_MGR.get() {
+                stats_mgr.purge_hosts(&purge_set);
+            }
+            Json(json!({
+                "code": 0,
+                "message": "deleted hosts purged",
+                "data": data,
+            }))
+            .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "code": 1,
+                "message": err.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminPasswordPayload {
+    current_password: String,
+    new_password: String,
+}
+
+pub async fn change_admin_password(
+    _claims: jwt::Claims,
+    Json(payload): Json<AdminPasswordPayload>,
+) -> impl IntoResponse {
+    let cfg = G_CONFIG.get().unwrap();
+    match admin::change_admin_password(
+        cfg.admin_pass.as_deref(),
+        &payload.current_password,
+        &payload.new_password,
+    ) {
+        Ok(()) => Json(json!({
+            "code": 0,
+            "message": "password updated",
+        }))
+        .into_response(),
+        Err(err) => {
+            let (status, message) = match err {
+                admin::PasswordUpdateError::WrongCurrentPassword => (StatusCode::BAD_REQUEST, "当前密码不正确"),
+                admin::PasswordUpdateError::NewPasswordTooShort => {
+                    (StatusCode::BAD_REQUEST, "新密码至少需要 12 个字符")
+                }
+                admin::PasswordUpdateError::NewPasswordTooLong => {
+                    (StatusCode::BAD_REQUEST, "新密码不能超过 256 个字节")
+                }
+                admin::PasswordUpdateError::NewPasswordUnchanged => {
+                    (StatusCode::BAD_REQUEST, "新密码不能和当前密码相同")
+                }
+                admin::PasswordUpdateError::HashFailed | admin::PasswordUpdateError::SaveFailed => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "修改密码失败")
+                }
+            };
+            (
+                status,
+                Json(json!({
+                    "code": 1,
+                    "message": message,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn admin_access_command(
+    _claims: jwt::Claims,
+    Path(gid): Path<String>,
+    req_header: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let cfg = G_CONFIG.get().unwrap();
+    let Some(group) = admin::effective_group(&cfg.hosts_group_map, &gid) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "code": 1,
+                "message": "access key not found",
+            })),
+        )
+            .into_response();
+    };
+
+    access_command_response(group, cfg, &req_header, &params)
+}
+
+pub async fn admin_default_access_command(
+    _claims: jwt::Claims,
+    req_header: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let cfg = G_CONFIG.get().unwrap();
+    match admin::ensure_default_access_key() {
+        Ok(group) => access_command_response(group, cfg, &req_header, &params),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "code": 1,
+                "message": err.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+fn access_command_response(
+    group: crate::config::HostGroup,
+    cfg: &crate::config::Config,
+    req_header: &HeaderMap,
+    params: &HashMap<String, String>,
+) -> Response {
+    let panel_url = panel_base_url(cfg, req_header);
+    let agent_url = agent_base_url(cfg, req_header);
+    let uid = query_text(params, "uid").unwrap_or_else(random_server_id);
+    let alias = query_text(params, "alias");
+    let interval = query_u32(&params, "interval", 1, 1, 86_400).to_string();
+    let mut query = Vec::new();
+    push_query_pair(&mut query, "gid", &group.gid);
+    push_query_pair(&mut query, "pass", &group.password);
+    push_query_pair(&mut query, "uid", &uid);
+    if let Some(alias) = &alias {
+        push_query_pair(&mut query, "alias", alias);
+    }
+    push_query_pair(&mut query, "interval", &interval);
+
+    if let Some(location) = query_text(&params, "loc") {
+        push_query_pair(&mut query, "loc", &location);
+    }
+    if let Some(host_type) = query_text(&params, "type") {
+        push_query_pair(&mut query, "type", &host_type);
+    }
+    if let Some(weight) = query_u32_opt(&params, "weight", 1, 1_000_000) {
+        push_query_pair(&mut query, "weight", &weight.to_string());
+    }
+    for key in ["ping", "tupd", "extra", "notify", "vnstat", "cn"] {
+        if let Some(value) = query_toggle(&params, key) {
+            push_query_pair(&mut query, key, value);
+        }
+    }
+
+    let install_url = format!("{}/i?{}", agent_url.trim_end_matches('/'), query.join("&"));
+    let script = format!("curl -fsSL {} | bash", shell_quote(&install_url));
+
+    Json(json!({
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "gid": group.gid,
+            "panel_url": panel_url,
+            "agent_url": agent_url,
+            "install_url": install_url,
+            "script": script,
+            "params": {
+                "uid": uid,
+                "alias": alias,
+                "interval": interval,
+            },
+        },
+    }))
+    .into_response()
+}
+
+pub async fn admin_access_secret(_claims: jwt::Claims, Path(gid): Path<String>) -> impl IntoResponse {
+    let cfg = G_CONFIG.get().unwrap();
+    let Some(group) = admin::effective_group(&cfg.hosts_group_map, &gid) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "code": 1,
+                "message": "access key not found",
+            })),
+        )
+            .into_response();
+    };
+
+    Json(json!({
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "gid": group.gid,
+            "password": group.password,
+        },
+    }))
+    .into_response()
+}
+
+fn panel_base_url(cfg: &crate::config::Config, req_header: &HeaderMap) -> String {
+    if let Some(url) = admin::access_base_url() {
+        return normalize_base_url(&url);
+    }
+    if !cfg.server_url.trim().is_empty() {
+        return normalize_base_url(&cfg.server_url);
+    }
+
+    forwarded_base_url(req_header)
+}
+
+fn agent_base_url(cfg: &crate::config::Config, req_header: &HeaderMap) -> String {
+    if let Some(url) = admin::agent_base_url() {
+        return normalize_base_url(&url);
+    }
+    if let Some(url) = admin::access_base_url() {
+        return normalize_base_url(&url);
+    }
+    if !cfg.server_url.trim().is_empty() {
+        return normalize_base_url(&cfg.server_url);
+    }
+
+    forwarded_base_url(req_header)
+}
+
+fn forwarded_base_url(req_header: &HeaderMap) -> String {
+    let mut scheme = "http".to_string();
+    let mut domain = "127.0.0.1:8080".to_string();
+    if let Some(value) = req_header.get("x-forwarded-proto") {
+        if let Ok(value) = value.to_str() {
+            scheme = value.to_string();
+        }
+    }
+    if let Some(value) = req_header.get("host") {
+        if let Ok(value) = value.to_str() {
+            domain = value.to_string();
+        }
+    }
+    if let Some(value) = req_header.get("x-forwarded-host") {
+        if let Ok(value) = value.to_str() {
+            domain = value.to_string();
+        }
+    }
+    format!("{scheme}://{domain}")
+}
+
+fn normalize_base_url(value: &str) -> String {
+    let mut url = value.trim().trim_end_matches('/').to_string();
+    if url.ends_with("/report") {
+        url.truncate(url.len() - "/report".len());
+    }
+    if url.is_empty() {
+        return url;
+    }
+    if !url.contains("://") {
+        url = format!("http://{url}");
+    }
+    url
+}
+
+fn random_server_id() -> String {
+    let value = uuid::Uuid::new_v4().simple().to_string();
+    format!("srv-{}", &value[..8])
+}
+
+fn query_text(params: &HashMap<String, String>, key: &str) -> Option<String> {
+    params
+        .get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn query_u32(params: &HashMap<String, String>, key: &str, default: u32, min: u32, max: u32) -> u32 {
+    query_u32_opt(params, key, min, max).unwrap_or(default)
+}
+
+fn query_u32_opt(params: &HashMap<String, String>, key: &str, min: u32, max: u32) -> Option<u32> {
+    params
+        .get(key)
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| (min..=max).contains(value))
+}
+
+fn query_toggle<'a>(params: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    match params.get(key).map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on") => Some("1"),
+        Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off") => Some("0"),
+        _ => None,
+    }
+}
+
+fn push_query_pair(query: &mut Vec<String>, key: &str, value: &str) {
+    query.push(format!("{}={}", query_encode(key), query_encode(value)));
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '/' | ':' | '_' | '-' | '='))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn query_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 #[allow(clippy::unnecessary_wraps)]
@@ -136,7 +460,11 @@ pub async fn init_client(uri: Uri, req_header: HeaderMap, Query(params): Query<H
 
     // load deploy config
     if let Some(cfg) = G_CONFIG.get() {
-        server_url.clone_from(&cfg.server_url);
+        if let Some(url) = admin::agent_base_url() {
+            server_url = format!("{}/report", normalize_base_url(&url).trim_end_matches('/'));
+        } else {
+            server_url.clone_from(&cfg.server_url);
+        }
         workspace.clone_from(&cfg.workspace);
     }
     // build server url

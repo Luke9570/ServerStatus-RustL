@@ -45,6 +45,7 @@ pub async fn authorize(Json(payload): Json<AuthPayload>) -> Result<Json<AuthBody
         scope: ADMIN_SCOPE.to_owned(),
         iat: now,
         exp: now.saturating_add(usize::try_from(TOKEN_TTL_SECONDS).unwrap_or(usize::MAX)),
+        pwdv: crate::admin::admin_session_version(),
     };
     let token = encode(&Header::default(), &claims, &KEYS.encoding).map_err(|_| AuthError::TokenCreation)?;
 
@@ -71,6 +72,8 @@ pub struct Claims {
     pub scope: String,
     pub iat: usize,
     pub exp: usize,
+    #[serde(default)]
+    pub pwdv: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,7 +98,11 @@ pub enum AuthError {
 
 impl Display for Claims {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sub: {}\nscope: {}\niat: {}\nexp: {}", self.sub, self.scope, self.iat, self.exp)
+        write!(
+            f,
+            "sub: {}\nscope: {}\niat: {}\nexp: {}\npwdv: {}",
+            self.sub, self.scope, self.iat, self.exp, self.pwdv
+        )
     }
 }
 
@@ -127,6 +134,9 @@ where
         }
         let cfg = G_CONFIG.get().ok_or(AuthError::InvalidToken)?;
         if cfg.admin_user.as_deref() != Some(claims.sub.as_str()) {
+            return Err(AuthError::InvalidToken);
+        }
+        if claims.pwdv != crate::admin::admin_session_version() {
             return Err(AuthError::InvalidToken);
         }
 

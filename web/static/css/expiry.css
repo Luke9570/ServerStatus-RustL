@@ -144,6 +144,17 @@
   font-size: 12px;
 }
 
+.ssr-empty-state {
+  width: 100%;
+  padding: 10px 12px;
+  border-style: solid;
+  background: rgba(248, 250, 252, 0.7);
+}
+
+.dark .ssr-empty-state {
+  background: rgba(15, 23, 42, 0.28);
+}
+
 .dark .ssr-expiry-quiet {
   color: #aab8ca;
 }

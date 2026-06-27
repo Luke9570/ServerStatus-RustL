@@ -1,8 +1,21 @@
 #![deny(warnings)]
 #![allow(unused)]
-#![allow(clippy::too_many_lines, clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::many_single_char_names)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::many_single_char_names
+)]
+use crate::status;
+use crate::vnstat;
+use crate::Args;
 use prettytable::{row, Table};
+use stat_common::{
+    server_status::{DiskInfo, StatRequest, SysInfo},
+    utils::bytes2human,
+};
 use std::collections::HashSet;
+use std::env::consts::ARCH;
 use std::fmt::Write;
 use std::fs;
 use std::sync::Arc;
@@ -11,14 +24,6 @@ use std::thread;
 use std::time::Duration;
 use sysinfo::CpuRefreshKind;
 use sysinfo::{Components, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
-use std::env::consts::ARCH;
-use crate::status;
-use crate::vnstat;
-use crate::Args;
-use stat_common::{
-    server_status::{DiskInfo, StatRequest, SysInfo},
-    utils::bytes2human,
-};
 
 const SAMPLE_PERIOD: u64 = 1000; //ms
 
@@ -89,7 +94,8 @@ pub(crate) fn calc_hdd_stats(disks: &[DiskCalcInput], si: bool, is_windows: bool
 }
 
 pub fn start_cpu_percent_collect_t() {
-    let mut sys = System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage()));
+    let mut sys =
+        System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage()));
     thread::spawn(move || loop {
         sys.refresh_cpu_all();
 

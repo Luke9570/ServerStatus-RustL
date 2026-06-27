@@ -3,7 +3,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use uuid::Uuid;
 
@@ -175,22 +174,25 @@ impl Config {
         false
     }
     pub fn group_auth(&self, gid: &str, pass: &str) -> bool {
-        if let Some(o) = self.hosts_group_map.get(gid) {
+        if let Some(o) = crate::admin::effective_group(&self.hosts_group_map, gid) {
             return pass.eq(o.password.as_str());
         }
         false
     }
     pub fn admin_auth(&self, user: &str, pass: &str) -> bool {
-        if let (Some(u), Some(p)) = (self.admin_user.as_ref(), self.admin_pass.as_ref()) {
-            return user.eq(u.as_str()) && pass.eq(p.as_str());
+        if let Some(u) = self.admin_user.as_ref() {
+            return user.eq(u.as_str()) && crate::admin::admin_password_matches(self.admin_pass.as_deref(), pass);
         }
         false
     }
 
     pub fn to_admin_json_value(&self) -> Value {
+        let admin_data = crate::admin::snapshot();
+        let deleted_hosts: std::collections::HashSet<String> = admin_data.deleted_hosts.iter().cloned().collect();
         let hosts: Vec<Value> = self
             .hosts
             .iter()
+            .filter(|host| !deleted_hosts.contains(&host.name))
             .map(|host| {
                 json!({
                     "name": host.name,
@@ -210,27 +212,35 @@ impl Config {
                 })
             })
             .collect();
-        let hosts_group: Vec<Value> = self
-            .hosts_group
-            .iter()
-            .map(|group| {
-                json!({
-                    "gid": group.gid,
-                    "location": group.location,
-                    "type": group.r#type,
-                    "notify": group.notify,
-                    "labels": group.labels,
-                    "expire": group.expire,
-                    "billing": group.billing,
-                    "expire_notify": group.expire_notify,
-                    "weight": group.weight,
-                })
-            })
-            .collect();
+        let deleted_access_keys: std::collections::HashSet<String> =
+            admin_data.deleted_access_keys.iter().cloned().collect();
+        let mut seen_groups = std::collections::HashSet::new();
+        let mut hosts_group: Vec<Value> = Vec::new();
+        for group in &self.hosts_group {
+            if deleted_access_keys.contains(&group.gid) {
+                continue;
+            }
+            if let Some(group) = crate::admin::effective_group(&self.hosts_group_map, &group.gid) {
+                seen_groups.insert(group.gid.clone());
+                hosts_group.push(group_to_admin_json(&group));
+            }
+        }
+        for gid in admin_data.access_keys.keys() {
+            if seen_groups.contains(gid) || deleted_access_keys.contains(gid) {
+                continue;
+            }
+            if let Some(group) = crate::admin::effective_group(&self.hosts_group_map, gid) {
+                seen_groups.insert(group.gid.clone());
+                hosts_group.push(group_to_admin_json(&group));
+            }
+        }
 
         json!({
             "notify_interval": self.notify_interval,
             "offline_threshold": self.offline_threshold,
+            "admin": {
+                "username": crate::admin::effective_admin_user(self.admin_user.as_deref()).unwrap_or_default(),
+            },
             "expire_notify": self.expire_notify,
             "hosts": hosts,
             "hosts_group": hosts_group,
@@ -240,6 +250,7 @@ impl Config {
                 "chat_id": "",
                 "title": self.tgbot.title,
                 "expire_tpl": self.tgbot.expire_tpl,
+                "health_tpl": self.tgbot.health_tpl,
             },
             "bark": {
                 "enabled": self.bark.enabled,
@@ -252,6 +263,7 @@ impl Config {
                 "url": self.bark.url,
                 "timeout": self.bark.timeout,
                 "expire_tpl": self.bark.expire_tpl,
+                "health_tpl": self.bark.health_tpl,
             },
         })
     }
@@ -259,6 +271,20 @@ impl Config {
     // pub fn to_string(&self) -> Result<String> {
     //     serde_json::to_string(&self).map_err(anyhow::Error::new)
     // }
+}
+
+fn group_to_admin_json(group: &HostGroup) -> Value {
+    json!({
+        "gid": group.gid,
+        "location": group.location,
+        "type": group.r#type,
+        "notify": group.notify,
+        "labels": group.labels,
+        "expire": group.expire,
+        "billing": group.billing,
+        "expire_notify": group.expire_notify,
+        "weight": group.weight,
+    })
 }
 
 pub fn from_str(content: &str) -> Option<Config> {
@@ -317,14 +343,6 @@ pub fn from_str(content: &str) -> Option<Config> {
     eprintln!("✨ admin_pass: {}", o.admin_pass.as_ref()?);
 
     Some(o)
-}
-
-pub fn from_env() -> Option<Config> {
-    from_str(
-        env::var("SRV_CONF")
-            .expect("can't load config from env `SRV_CONF")
-            .as_str(),
-    )
 }
 
 pub fn from_file(cfg: &str) -> Option<Config> {

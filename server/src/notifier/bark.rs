@@ -36,6 +36,10 @@ fn default_expire_tpl() -> String {
     "{{host.location}} {{host.alias}} {{host.expire.label}}\nExpire: {{host.expire.date}}".to_string()
 }
 
+fn default_health_tpl() -> String {
+    "{{host.custom}}".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -64,6 +68,8 @@ pub struct Config {
     pub custom_tpl: String,
     #[serde(default = "default_expire_tpl")]
     pub expire_tpl: String,
+    #[serde(default = "default_health_tpl")]
+    pub health_tpl: String,
 }
 
 impl Default for Config {
@@ -82,6 +88,7 @@ impl Default for Config {
             offline_tpl: default_offline_tpl(),
             custom_tpl: String::new(),
             expire_tpl: default_expire_tpl(),
+            health_tpl: default_health_tpl(),
         }
     }
 }
@@ -104,6 +111,7 @@ impl Bark {
         add_template(KIND, get_tag(&Event::NodeDown), config.offline_tpl);
         add_template(KIND, get_tag(&Event::Custom), config.custom_tpl);
         add_template(KIND, get_tag(&Event::Expire), config.expire_tpl);
+        add_template(KIND, get_tag(&Event::Health), config.health_tpl);
 
         o
     }

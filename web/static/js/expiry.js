@@ -237,12 +237,55 @@
     return panel;
   }
 
-  function renderPanel(servers) {
+  function setMainContentVisible(visible) {
+    const body = document.getElementById("body");
+    if (!body) {
+      return;
+    }
+    const mainContent = [...body.children].find((node) => node.id !== PANEL_ID);
+    if (mainContent) {
+      mainContent.hidden = !visible;
+    }
+  }
+
+  function renderEmptyPanel(panel, updated) {
+    const header = document.createElement("div");
+    header.className = "ssr-expiry-header";
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "ssr-expiry-title-wrap";
+
+    const title = document.createElement("div");
+    title.className = "ssr-expiry-title";
+    title.textContent = "暂无服务器上报";
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "ssr-expiry-subtitle";
+    subtitle.textContent = updated ? `最后检查: ${new Date(updated * 1000).toLocaleString()}` : "Agent 接入后会自动显示节点状态";
+
+    titleWrap.append(title, subtitle);
+
+    const metrics = document.createElement("div");
+    metrics.className = "ssr-expiry-metrics";
+    metrics.append(metric("节点", "0", "neutral"), metric("在线", "0", "neutral"));
+
+    const list = document.createElement("div");
+    list.className = "ssr-expiry-list";
+    const quiet = document.createElement("div");
+    quiet.className = "ssr-expiry-quiet ssr-empty-state";
+    quiet.textContent = "后端服务正常，正在等待 Agent 上报。";
+    list.append(quiet);
+
+    header.append(titleWrap, metrics);
+    panel.hidden = false;
+    panel.replaceChildren(header, list);
+  }
+
+  function renderPanel(servers, updated) {
     const panel = ensurePanel();
 
     if (servers.length === 0) {
-      panel.hidden = true;
-      panel.replaceChildren();
+      renderEmptyPanel(panel, updated);
       return;
     }
 
@@ -393,7 +436,8 @@
 
   function render(data) {
     const servers = Array.isArray(data.servers) ? data.servers : [];
-    renderPanel(servers);
+    setMainContentVisible(servers.length > 0);
+    renderPanel(servers, data.updated);
     decorateRows(servers);
   }
 

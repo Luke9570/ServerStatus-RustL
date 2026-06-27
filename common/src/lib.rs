@@ -17,7 +17,7 @@ pub mod utils {
     }
 
     const UNITS: [[u64; SYMBOLS_LEN]; 2] = init_units();
-    #[must_use] 
+    #[must_use]
     pub fn bytes2human(value: u64, precision: usize, si: bool) -> String {
         let t: usize = usize::from(si);
         for idx in (0..SYMBOLS_LEN).rev() {

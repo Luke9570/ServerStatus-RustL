@@ -3,7 +3,7 @@ use anyhow::Result;
 use chrono::{Datelike, Local, Timelike};
 use once_cell::sync::OnceCell;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
@@ -27,9 +27,48 @@ const OS_LIST: [&str; 10] = [
 
 static STAT_SENDER: OnceCell<SyncSender<Cow<HostStat>>> = OnceCell::new();
 
+#[derive(Default)]
+struct AlertEvalState {
+    since: u64,
+    last_sent: u64,
+}
+
+struct NotifyMessage {
+    event: Event,
+    stat: Arc<HostStat>,
+    notification_group: String,
+    notification_methods: Vec<String>,
+}
+
+impl NotifyMessage {
+    fn new(event: Event, stat: Arc<HostStat>) -> Self {
+        Self {
+            event,
+            stat,
+            notification_group: String::new(),
+            notification_methods: Vec::new(),
+        }
+    }
+
+    fn with_rule(
+        event: Event,
+        stat: Arc<HostStat>,
+        notification_group: String,
+        notification_methods: Vec<String>,
+    ) -> Self {
+        Self {
+            event,
+            stat,
+            notification_group,
+            notification_methods,
+        }
+    }
+}
+
 pub struct StatsMgr {
     resp_json: Arc<Mutex<String>>,
     stats_data: Arc<Mutex<StatsResp>>,
+    stat_map: Arc<Mutex<HashMap<String, Arc<HostStat>>>>,
 }
 
 impl StatsMgr {
@@ -37,6 +76,7 @@ impl StatsMgr {
         Self {
             resp_json: Arc::new(Mutex::new("{}".to_string())),
             stats_data: Arc::new(Mutex::new(StatsResp::new())),
+            stat_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -89,7 +129,7 @@ impl StatsMgr {
         STAT_SENDER.set(stat_tx).unwrap();
         let (notifier_tx, notifier_rx) = sync_channel(512);
 
-        let stat_map: Arc<Mutex<HashMap<String, Arc<HostStat>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let stat_map = self.stat_map.clone();
 
         // stat_rx thread
         thread::spawn({
@@ -102,6 +142,9 @@ impl StatsMgr {
                     trace!("recv stat `{stat:?}");
 
                     let mut stat_t = stat.to_mut();
+                    if crate::admin::deleted_hosts().contains(&stat_t.name) {
+                        continue;
+                    }
 
                     // group mode
                     if !stat_t.gid.is_empty() {
@@ -112,7 +155,7 @@ impl StatsMgr {
                         if let Ok(mut hosts_map) = hosts_map.lock() {
                             let host = hosts_map.get(&stat_t.name);
                             if host.is_none() || !host.unwrap().gid.eq(&stat_t.gid) {
-                                if let Some(group) = cfg.hosts_group_map.get(&stat_t.gid) {
+                                if let Some(group) = crate::admin::effective_group(&cfg.hosts_group_map, &stat_t.gid) {
                                     // 名称不变，换组了，更新组配置 & last in/out
                                     let mut inst = group.inst_host(&stat_t.name);
                                     if let Some(o) = host {
@@ -209,7 +252,7 @@ impl StatsMgr {
                             let arc_stat = Arc::new(stat.into_owned());
                             if notify_up {
                                 // node up notify
-                                notifier_tx.send((Event::NodeUp, Arc::clone(&arc_stat)));
+                                notifier_tx.send(NotifyMessage::new(Event::NodeUp, Arc::clone(&arc_stat)));
                             }
                             host_stat_map.insert(arc_stat.name.clone(), arc_stat);
                             //trace!("{:?}", host_stat_map);
@@ -231,6 +274,7 @@ impl StatsMgr {
             let mut latest_group_gc = 0_u64;
             let mut latest_alert_check_ts = 0_u64;
             let mut expire_notify_state: HashMap<String, String> = HashMap::new();
+            let mut alert_rule_state: HashMap<String, AlertEvalState> = HashMap::new();
             move || loop {
                 thread::sleep(Duration::from_millis(500));
 
@@ -238,8 +282,10 @@ impl StatsMgr {
                 let now = resp.updated;
                 let mut any_notified = false;
                 let expire_notify = crate::admin::effective_expire_notify(&cfg.expire_notify);
-                let expire_check_due =
-                    expire_notify.enabled && latest_alert_check_ts + expire_notify.interval < now;
+                let alert_rules = crate::admin::effective_alert_rules();
+                let server_groups = crate::admin::snapshot().server_groups;
+                let deleted_hosts = crate::admin::deleted_hosts();
+                let expire_check_due = expire_notify.enabled && latest_alert_check_ts + expire_notify.interval < now;
 
                 // group gc
                 if latest_group_gc + cfg.group_gc < now {
@@ -256,6 +302,9 @@ impl StatsMgr {
 
                 if let Ok(mut host_stat_map) = stat_map.lock() {
                     for (_, stat) in host_stat_map.iter_mut() {
+                        if deleted_hosts.contains(&stat.name) {
+                            continue;
+                        }
                         if stat.disabled {
                             resp.servers.push(Arc::clone(stat));
                             continue;
@@ -299,27 +348,37 @@ impl StatsMgr {
                                 false
                             };
 
+                            let health_events =
+                                collect_alert_events(o, now, &alert_rules, &server_groups, &mut alert_rule_state);
+
                             let node_event = if o.notify && latest_notify_ts + cfg.notify_interval < now {
                                 if o.online4 || o.online6 {
                                     Some(Event::Custom)
                                 } else {
-                                    o.disabled = true;
-                                    Some(Event::NodeDown)
+                                    None
                                 }
                             } else {
                                 None
                             };
 
-                            (node_event, expire_event)
+                            (node_event, expire_event, health_events)
                         };
 
                         // client notify — Arc::clone is O(1), no HostStat copy
                         if let Some(event) = notify_event.0 {
-                            notifier_tx.send((event, Arc::clone(stat)));
+                            notifier_tx.send(NotifyMessage::new(event, Arc::clone(stat)));
                             any_notified = true;
                         }
                         if notify_event.1 {
-                            notifier_tx.send((Event::Expire, Arc::clone(stat)));
+                            notifier_tx.send(NotifyMessage::new(Event::Expire, Arc::clone(stat)));
+                        }
+                        for (health_stat, notification_group, notification_methods) in notify_event.2 {
+                            notifier_tx.send(NotifyMessage::with_rule(
+                                Event::Health,
+                                health_stat,
+                                notification_group,
+                                notification_methods,
+                            ));
                         }
 
                         resp.servers.push(Arc::clone(stat));
@@ -374,12 +433,19 @@ impl StatsMgr {
         // notify thread
         thread::spawn(move || loop {
             while let Ok(msg) = notifier_rx.recv() {
-                let (e, stat) = msg;
                 let notify_list = &*notifies.lock().unwrap();
-                trace!("recv notify => {e:?}, {stat:?}");
+                trace!("recv notify => {:?}, {:?}", msg.event, msg.stat);
                 for n in notify_list {
-                    trace!("{} notify {:?} => {:?}", n.kind(), e, stat);
-                    n.notify(&e, &stat);
+                    if !crate::admin::notification_methods_allow(&msg.notification_methods, n.kind()) {
+                        continue;
+                    }
+                    if msg.notification_methods.is_empty()
+                        && !crate::admin::notification_group_allows(&msg.notification_group, n.kind())
+                    {
+                        continue;
+                    }
+                    trace!("{} notify {:?} => {:?}", n.kind(), msg.event, msg.stat);
+                    n.notify(&msg.event, &msg.stat);
                 }
             }
         });
@@ -393,6 +459,21 @@ impl StatsMgr {
 
     pub fn get_stats_json(&self) -> String {
         self.resp_json.lock().unwrap().to_string()
+    }
+
+    pub fn purge_hosts(&self, hosts: &HashSet<String>) {
+        if hosts.is_empty() {
+            return;
+        }
+        if let Ok(mut stat_map) = self.stat_map.lock() {
+            stat_map.retain(|name, _| !hosts.contains(name));
+        }
+        if let Ok(mut stats_data) = self.stats_data.lock() {
+            stats_data.servers.retain(|stat| !hosts.contains(&stat.name));
+            if let Ok(mut resp_json) = self.resp_json.lock() {
+                *resp_json = serde_json::to_string(&*stats_data).unwrap_or_else(|_| "{}".to_string());
+            }
+        }
     }
 
     #[allow(clippy::unused_self)]
@@ -429,5 +510,185 @@ impl StatsMgr {
         }
 
         Ok(resp_json)
+    }
+}
+
+fn collect_alert_events(
+    stat: &HostStat,
+    now: u64,
+    rules: &[crate::admin::AlertRuleOverride],
+    server_groups: &[crate::admin::ServerGroupOverride],
+    states: &mut HashMap<String, AlertEvalState>,
+) -> Vec<(Arc<HostStat>, String, Vec<String>)> {
+    if !stat.notify || rules.is_empty() {
+        return Vec::new();
+    }
+
+    let online = stat.online4 || stat.online6;
+    let mut events = Vec::new();
+    for rule in rules {
+        if !alert_rule_applies_to_stat(rule, stat, server_groups) {
+            continue;
+        }
+        let key = format!("{}:{}", stat.name, rule.id);
+        if rule.metric == "offline" {
+            let state = states.entry(key).or_default();
+            if online {
+                state.since = 0;
+                continue;
+            }
+            if stat.latest_ts + rule.duration < now && state.last_sent + rule.repeat_interval < now {
+                state.last_sent = now;
+                events.push((
+                    stat_with_custom(stat, offline_alert_message(stat, rule.duration)),
+                    rule.notification_group.clone(),
+                    rule.notifications.clone(),
+                ));
+            }
+            continue;
+        }
+
+        if !online {
+            states.remove(&key);
+            continue;
+        }
+        let Some(current) = metric_value(stat, &rule.metric) else {
+            states.remove(&key);
+            continue;
+        };
+        let Some(threshold) = rule.threshold else {
+            states.remove(&key);
+            continue;
+        };
+        let state = states.entry(key).or_default();
+        if current > threshold {
+            if state.since == 0 {
+                state.since = now;
+            }
+            if now.saturating_sub(state.since) >= rule.duration && state.last_sent + rule.repeat_interval < now {
+                state.last_sent = now;
+                events.push((
+                    stat_with_custom(stat, usage_alert_message(stat, rule, current, threshold)),
+                    rule.notification_group.clone(),
+                    rule.notifications.clone(),
+                ));
+            }
+        } else {
+            state.since = 0;
+        }
+    }
+
+    events
+}
+
+fn alert_rule_applies_to_stat(
+    rule: &crate::admin::AlertRuleOverride,
+    stat: &HostStat,
+    server_groups: &[crate::admin::ServerGroupOverride],
+) -> bool {
+    if rule.servers.is_empty() && rule.server_groups.is_empty() {
+        return true;
+    }
+    if rule.servers.iter().any(|name| name == &stat.name) {
+        return true;
+    }
+    if rule.server_groups.is_empty() {
+        return false;
+    }
+
+    let selected_groups: HashSet<&str> = rule.server_groups.iter().map(String::as_str).collect();
+    if !stat.gid.is_empty() && selected_groups.contains(stat.gid.as_str()) {
+        return true;
+    }
+
+    server_groups
+        .iter()
+        .filter(|group| selected_groups.contains(group.id.as_str()))
+        .any(|group| group.servers.iter().any(|name| name == &stat.name))
+}
+
+fn stat_with_custom(stat: &HostStat, custom: String) -> Arc<HostStat> {
+    let mut stat = stat.clone();
+    stat.custom = custom;
+    Arc::new(stat)
+}
+
+fn metric_value(stat: &HostStat, metric: &str) -> Option<f64> {
+    match metric {
+        "cpu" => Some(stat.cpu),
+        "memory" => percent(stat.memory_used, stat.memory_total),
+        "disk" => percent(stat.hdd_used, stat.hdd_total),
+        "load1" => Some(stat.load_1),
+        "load5" => Some(stat.load_5),
+        "load15" => Some(stat.load_15),
+        _ => None,
+    }
+}
+
+fn percent(used: u64, total: u64) -> Option<f64> {
+    if total == 0 {
+        None
+    } else {
+        Some(used as f64 * 100.0 / total as f64)
+    }
+}
+
+fn offline_alert_message(stat: &HostStat, duration: u64) -> String {
+    format!(
+        "节点 {} 已离线超过 {} 秒\n位置: {}\n分组: {}",
+        stat.alias_or_name(),
+        duration,
+        empty_as_dash(&stat.location),
+        empty_as_dash(&stat.gid)
+    )
+}
+
+fn usage_alert_message(
+    stat: &HostStat,
+    rule: &crate::admin::AlertRuleOverride,
+    current: f64,
+    threshold: f64,
+) -> String {
+    format!(
+        "节点 {} {} 持续超过阈值\n当前: {:.1}\n阈值: {:.1}\n持续: {} 秒",
+        stat.alias_or_name(),
+        metric_label(&rule.metric),
+        current,
+        threshold,
+        rule.duration
+    )
+}
+
+trait HostStatLabel {
+    fn alias_or_name(&self) -> &str;
+}
+
+impl HostStatLabel for HostStat {
+    fn alias_or_name(&self) -> &str {
+        if self.alias.is_empty() {
+            &self.name
+        } else {
+            &self.alias
+        }
+    }
+}
+
+fn metric_label(metric: &str) -> &str {
+    match metric {
+        "cpu" => "CPU 使用率",
+        "memory" => "内存使用率",
+        "disk" => "硬盘使用率",
+        "load1" => "1 分钟负载",
+        "load5" => "5 分钟负载",
+        "load15" => "15 分钟负载",
+        _ => metric,
+    }
+}
+
+fn empty_as_dash(value: &str) -> &str {
+    if value.is_empty() {
+        "-"
+    } else {
+        value
     }
 }

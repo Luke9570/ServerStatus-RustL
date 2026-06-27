@@ -7,13 +7,12 @@ use tonic::{metadata::MetadataValue, Request};
 use tower::timeout::Timeout;
 use url::Url;
 
+use crate::sample_all;
+use crate::Args;
 use stat_common::server_status::server_status_client::ServerStatusClient;
 use stat_common::server_status::StatRequest;
 use tonic::transport::Channel;
-use tonic::transport::{ClientTlsConfig,Identity,Certificate};
-use crate::sample_all;
-use crate::Args;
-
+use tonic::transport::{Certificate, ClientTlsConfig, Identity};
 
 pub async fn report(args: &Args, stat_base: &mut StatRequest) -> anyhow::Result<()> {
     let auth_user: String;
@@ -32,7 +31,9 @@ pub async fn report(args: &Args, stat_base: &mut StatRequest) -> anyhow::Result<
     if args.mtls {
         // === mTLS 模式 ===
         let u = Url::parse(&addr)?;
-        let domain_name = u.host_str().ok_or_else(|| anyhow::anyhow!("invalid URL: missing host"))?;
+        let domain_name = u
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid URL: missing host"))?;
 
         let tls_dir = std::path::PathBuf::from_str(&args.tls_dir)?;
         let ca_pem = std::fs::read(tls_dir.join("ca.pem"))?;
@@ -45,10 +46,8 @@ pub async fn report(args: &Args, stat_base: &mut StatRequest) -> anyhow::Result<
             .domain_name(domain_name)
             .ca_certificate(ca)
             .identity(client_identity);
-            
-        channel = Channel::from_shared(addr)?
-            .tls_config(tls_config)?
-            .connect().await?;
+
+        channel = Channel::from_shared(addr)?.tls_config(tls_config)?.connect().await?;
     } else if addr.starts_with("https://") {
         // TLS
         let tls_config = ClientTlsConfig::new();

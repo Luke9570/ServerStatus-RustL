@@ -16,6 +16,10 @@ fn default_expire_tpl() -> String {
     "{{config.title}}\n<pre>{{host.location}} {{host.name}} {{host.expire.label}}</pre>\n<pre>Expire: {{host.expire.date}}</pre>".to_string()
 }
 
+fn default_health_tpl() -> String {
+    "{{config.title}}\n<pre>{{host.custom}}</pre>".to_string()
+}
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub enabled: bool,
@@ -27,6 +31,8 @@ pub struct Config {
     pub custom_tpl: String,
     #[serde(default = "default_expire_tpl")]
     pub expire_tpl: String,
+    #[serde(default = "default_health_tpl")]
+    pub health_tpl: String,
 }
 
 pub struct TGBot {
@@ -46,6 +52,7 @@ impl TGBot {
         add_template(KIND, get_tag(&Event::NodeDown), config.offline_tpl);
         add_template(KIND, get_tag(&Event::Custom), config.custom_tpl);
         add_template(KIND, get_tag(&Event::Expire), config.expire_tpl);
+        add_template(KIND, get_tag(&Event::Health), config.health_tpl);
 
         o
     }
@@ -95,7 +102,7 @@ impl crate::notifier::Notifier for TGBot {
             true,
         )
         .map(|content| match *e {
-            Event::NodeUp | Event::NodeDown | Event::Expire => {
+            Event::NodeUp | Event::NodeDown | Event::Expire | Event::Health => {
                 if !content.is_empty() {
                     self.send_notify(content).unwrap();
                 }

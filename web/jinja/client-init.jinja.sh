@@ -14,6 +14,7 @@ export SSR_PKG_VERSION={{pkg_version}}
 export SSR_CLIENT_OPTS='{{client_opts}}'
 export SSR_WORKSPACE={{workspace}}
 export SSR_CN={{cn}}
+export SSR_RELEASE_REPO=${SSR_RELEASE_REPO:-zdz/ServerStatus-Rust}
 
 Info="\033[32m[info]\033[0m"
 Error="\033[31m[err]\033[0m"
@@ -108,7 +109,7 @@ function install_deps() {
 function download_client() {
 
     cd ${SSR_WORKSPACE}
-    rm -rf client-*.zip stat_* | true
+    rm -f "client-${arch}-unknown-linux-musl.zip" "stat_client" "stat_client.service"
 
     say "start download the stat_client"
 
@@ -116,7 +117,7 @@ function download_client() {
         say "using cn mirror: coding.net"
         wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "https://d0ge-generic.pkg.coding.net/ServerStatus-Rust/releases/client-${arch}-unknown-linux-musl-v{{pkg_version}}.zip?version=v{{pkg_version}}"
     else
-        wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "https://github.com/zdz/ServerStatus-Rust/releases/download/v{{pkg_version}}/client-${arch}-unknown-linux-musl.zip"
+        wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "https://github.com/${SSR_RELEASE_REPO}/releases/download/v{{pkg_version}}/client-${arch}-unknown-linux-musl.zip"
     fi
 
     say "download stat_client succ"
@@ -126,7 +127,7 @@ function download_client() {
 
     say "unzip client-${arch}-unknown-linux-musl.zip"
     unzip -o client-${arch}-unknown-linux-musl.zip
-    rm -rf stat_client.service | true
+    rm -f "stat_client.service"
 
     chmod +x ${SSR_WORKSPACE}/stat_client
 }

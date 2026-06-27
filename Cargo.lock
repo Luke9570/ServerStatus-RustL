@@ -2503,6 +2503,7 @@ dependencies = [
  "prost",
  "reqwest",
  "rhai",
+ "ring",
  "rust-embed",
  "rustls-pki-types",
  "serde",

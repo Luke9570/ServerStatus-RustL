@@ -1,15 +1,15 @@
-version: "3"
-
 services:
   stat_server:
-    image: idoge/stat_server:latest
+    build: .
+    image: serverstatus-rustl:local
     container_name: stat_server
     restart: unless-stopped
+    working_dir: /data
+    command: ["/stat_server", "-c", "/data/config.toml"]
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - ./config.toml:/config.toml
-      - ./stats.json:/stats.json
+      - ./config.toml:/data/config.toml:ro
+      - ./runtime:/data
     ports:
       - 8080:8080
       - 9394:9394
-

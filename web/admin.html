@@ -6,6 +6,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="robots" content="noindex,nofollow" />
   <title>ServerStatus Admin</title>
+  <script>
+    (() => {
+      const mode = localStorage.getItem("ssr_admin_theme") || localStorage.getItem("chakra-ui-color-mode") || "system";
+      const dark = mode === "dark" || (mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.theme = mode;
+      document.documentElement.classList.toggle("dark", dark);
+    })();
+  </script>
   <link href="/static/css/admin.css" rel="stylesheet">
   <script defer src="/static/js/admin.js"></script>
 </head>
@@ -13,11 +21,30 @@
 <body>
   <main class="admin-shell">
     <section id="login" class="login-panel">
-      <div class="login-copy">
+      <div class="login-copy" aria-hidden="true">
+        <div class="login-brand-mark">S</div>
         <h1>ServerStatus</h1>
-        <p>后台配置入口</p>
+        <p>Admin Console</p>
+        <div class="login-signal-board">
+          <div>
+            <span>CPU</span>
+            <strong>18%</strong>
+          </div>
+          <div>
+            <span>MEM</span>
+            <strong>42%</strong>
+          </div>
+          <div>
+            <span>NET</span>
+            <strong>24ms</strong>
+          </div>
+        </div>
       </div>
       <form id="login-form" class="login-form" autocomplete="on">
+        <div class="login-form-title">
+          <h2>后台登录</h2>
+          <p>请输入管理员账号</p>
+        </div>
         <label>
           用户名
           <input id="username" name="username" autocomplete="username" required>
@@ -32,138 +59,281 @@
     </section>
 
     <section id="dashboard" class="dashboard" hidden>
-      <header class="topbar">
-        <div>
-          <h1>节点配置</h1>
-          <p id="summary">-</p>
+      <aside class="sidebar">
+        <div class="brand">
+          <strong>ServerStatus</strong>
+          <span id="summary">-</span>
         </div>
-        <div class="topbar-actions">
-          <button id="refresh" class="secondary" type="button">刷新</button>
-          <button id="logout" class="secondary" type="button">退出</button>
-          <button id="save" type="button">保存</button>
-        </div>
-      </header>
+        <nav class="nav-tabs" aria-label="后台管理">
+          <button class="nav-tab active" data-tab="servers" type="button">服务器</button>
+          <button class="nav-tab" data-tab="server-groups" type="button">服务器分组</button>
+          <button class="nav-tab" data-tab="alert-rules" type="button">告警规则</button>
+          <button class="nav-tab" data-tab="notifications" type="button">通知方式</button>
+          <button class="nav-tab" data-tab="settings" type="button">设置</button>
+        </nav>
+      </aside>
 
-      <nav class="tabs" aria-label="后台配置">
-        <button class="tab active" data-tab="nodes" type="button">节点</button>
-        <button class="tab" data-tab="groups" type="button">分组</button>
-        <button class="tab" data-tab="notify" type="button">通知</button>
-      </nav>
+      <section class="content">
+        <header class="topbar">
+          <div>
+            <h1 id="page-title">服务器</h1>
+            <p id="page-subtitle">节点列表、备注、账单和展示排序</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="theme-toggle" class="icon-button theme-toggle" type="button" aria-label="切换主题"></button>
+            <div class="user-menu">
+              <button id="user-menu-toggle" class="icon-button user-button" type="button" aria-label="用户菜单"></button>
+              <div id="user-menu-panel" class="user-menu-panel" hidden>
+                <div class="user-menu-account">
+                  <span>当前用户</span>
+                  <strong id="topbar-user">admin</strong>
+                </div>
+                <button id="logout" class="menu-item" type="button">退出登录</button>
+              </div>
+            </div>
+          </div>
+        </header>
 
-      <section id="tab-nodes" class="tab-page active">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>节点</th>
-                <th>状态</th>
-                <th>权重</th>
-                <th>到期日</th>
-                <th>自动续期</th>
-                <th>周期</th>
-                <th>金额</th>
-                <th>提醒</th>
-              </tr>
-            </thead>
-            <tbody id="node-rows"></tbody>
-          </table>
-        </div>
+        <section id="tab-servers" class="tab-page active">
+          <div class="section-toolbar">
+            <h2>服务器</h2>
+            <button id="add-server-access" class="secondary" type="button">接入服务器</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>服务器</th>
+                  <th>状态</th>
+                  <th>分组</th>
+                  <th>系统 / 地区</th>
+                  <th>公开备注</th>
+                  <th>到期</th>
+                  <th>排序</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="server-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="tab-server-groups" class="tab-page">
+          <div class="section-toolbar">
+            <h2>服务器分组</h2>
+            <button id="add-server-group" class="secondary" type="button">新增</button>
+          </div>
+          <div class="table-wrap">
+            <table class="compact-table">
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>服务器</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="server-group-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="tab-alert-rules" class="tab-page">
+          <div class="section-toolbar">
+            <h2>告警规则</h2>
+            <button id="add-alert-rule" class="secondary" type="button">新增</button>
+          </div>
+          <div class="table-wrap">
+            <table class="compact-table">
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>类型</th>
+                  <th>阈值</th>
+                  <th>持续</th>
+                  <th>范围</th>
+                  <th>通知方式</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="alert-rule-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="tab-notifications" class="tab-page">
+          <div class="settings-grid">
+            <section class="settings-block local-save-block" data-local-scope="tg">
+              <div class="settings-block-head">
+                <h2>Telegram</h2>
+                <div class="block-head-actions">
+                  <output id="tg-save-message" class="block-message" role="status"></output>
+                  <button id="tg-save" type="button" disabled>保存</button>
+                </div>
+              </div>
+              <label class="switch-row">
+                <input id="tg-enabled" type="checkbox">
+                启用
+              </label>
+              <label>
+                Bot Token
+                <input id="tg-token" autocomplete="off" placeholder="留空保持原值">
+              </label>
+              <label>
+                Chat ID
+                <input id="tg-chat" autocomplete="off" placeholder="留空保持原值">
+              </label>
+              <label>
+                标题
+                <input id="tg-title">
+              </label>
+              <label>
+                到期模板
+                <textarea id="tg-expire" rows="5"></textarea>
+              </label>
+              <label>
+                健康模板
+                <textarea id="tg-health" rows="5"></textarea>
+              </label>
+              <div class="block-actions">
+                <span class="block-message">Telegram 通道</span>
+              </div>
+            </section>
+
+            <section class="settings-block local-save-block" data-local-scope="bark">
+              <div class="settings-block-head">
+                <h2>Bark</h2>
+                <div class="block-head-actions">
+                  <output id="bark-save-message" class="block-message" role="status"></output>
+                  <button id="bark-save" type="button" disabled>保存</button>
+                </div>
+              </div>
+              <label class="switch-row">
+                <input id="bark-enabled" type="checkbox">
+                启用
+              </label>
+              <label>
+                Server
+                <input id="bark-server" placeholder="https://api.day.app">
+              </label>
+              <label>
+                Device Key
+                <input id="bark-key" autocomplete="off" placeholder="留空保持原值">
+              </label>
+              <label>
+                标题
+                <input id="bark-title">
+              </label>
+              <label>
+                分组
+                <input id="bark-group">
+              </label>
+              <label>
+                到期模板
+                <textarea id="bark-expire" rows="5"></textarea>
+              </label>
+              <label>
+                健康模板
+                <textarea id="bark-health" rows="5"></textarea>
+              </label>
+              <div class="block-actions">
+                <span class="block-message">Bark 通道</span>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="tab-settings" class="tab-page">
+          <div class="settings-grid">
+            <section class="settings-block access-settings local-save-block" data-local-scope="access">
+              <h2>接入地址</h2>
+              <label>
+                面板访问地址
+                <input id="access-base-url" placeholder="https://status.example.com">
+              </label>
+              <label>
+                Agent 上报地址
+                <input id="agent-base-url" placeholder="https://agent-status.example.com">
+              </label>
+              <div class="block-actions">
+                <output id="access-save-message" class="block-message" role="status"></output>
+                <button id="access-save" type="button" disabled>保存</button>
+              </div>
+            </section>
+            <section class="settings-block local-save-block" data-local-scope="expire">
+              <h2>到期提醒</h2>
+              <label class="switch-row">
+                <input id="expire-enabled" type="checkbox">
+                启用
+              </label>
+              <label>
+                提醒阈值
+                <input id="expire-days" placeholder="30,14,7,3,1,0">
+              </label>
+              <label>
+                重复间隔秒
+                <input id="expire-interval" type="number" min="60" step="60">
+              </label>
+              <div class="block-actions">
+                <output id="expire-save-message" class="block-message" role="status"></output>
+                <button id="expire-save" type="button" disabled>保存</button>
+              </div>
+            </section>
+            <section class="settings-block">
+              <h2>后台登录</h2>
+              <label>
+                当前用户
+                <input id="admin-username" disabled>
+              </label>
+              <form id="password-form" class="password-change-form" autocomplete="off">
+                <label>
+                  当前密码
+                  <input id="admin-current-password" type="password" autocomplete="current-password" required>
+                </label>
+                <label>
+                  新密码
+                  <input id="admin-new-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+                </label>
+                <label>
+                  确认新密码
+                  <input id="admin-new-password-confirm" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+                </label>
+                <div class="form-actions">
+                  <button id="password-submit" class="secondary" type="submit">修改密码</button>
+                  <output id="password-message" role="status"></output>
+                </div>
+              </form>
+              <p class="muted">正式部署请使用 HTTPS；新密码只保存为本地哈希，config.toml 内的密码会作为备用初始密码。</p>
+            </section>
+            <section class="settings-block">
+              <h2>已删除服务器</h2>
+              <div id="deleted-hosts" class="restore-list"></div>
+            </section>
+          </div>
+        </section>
       </section>
-
-      <section id="tab-groups" class="tab-page">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>分组</th>
-                <th>权重</th>
-                <th>到期日</th>
-                <th>自动续期</th>
-                <th>周期</th>
-                <th>金额</th>
-                <th>提醒</th>
-              </tr>
-            </thead>
-            <tbody id="group-rows"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section id="tab-notify" class="tab-page">
-        <div class="settings-grid">
-          <section class="settings-block">
-            <h2>到期提醒</h2>
-            <label class="switch-row">
-              <input id="expire-enabled" type="checkbox">
-              启用
-            </label>
-            <label>
-              提醒阈值
-              <input id="expire-days" placeholder="30,14,7,3,1,0">
-            </label>
-            <label>
-              重复间隔秒
-              <input id="expire-interval" type="number" min="60" step="60">
-            </label>
-          </section>
-
-          <section class="settings-block">
-            <h2>Telegram</h2>
-            <label class="switch-row">
-              <input id="tg-enabled" type="checkbox">
-              启用
-            </label>
-            <label>
-              Bot Token
-              <input id="tg-token" autocomplete="off">
-            </label>
-            <label>
-              Chat ID
-              <input id="tg-chat" autocomplete="off">
-            </label>
-            <label>
-              标题
-              <input id="tg-title">
-            </label>
-            <label>
-              到期模板
-              <textarea id="tg-expire" rows="5"></textarea>
-            </label>
-          </section>
-
-          <section class="settings-block">
-            <h2>Bark</h2>
-            <label class="switch-row">
-              <input id="bark-enabled" type="checkbox">
-              启用
-            </label>
-            <label>
-              Server
-              <input id="bark-server" placeholder="https://api.day.app">
-            </label>
-            <label>
-              Device Key
-              <input id="bark-key" autocomplete="off">
-            </label>
-            <label>
-              标题
-              <input id="bark-title">
-            </label>
-            <label>
-              分组
-              <input id="bark-group">
-            </label>
-            <label>
-              到期模板
-              <textarea id="bark-expire" rows="5"></textarea>
-            </label>
-          </section>
-        </div>
-      </section>
-
-      <output id="save-message" role="status"></output>
     </section>
   </main>
+
+  <dialog id="editor" class="editor-dialog">
+    <form id="editor-form" method="dialog" class="editor-panel">
+      <header class="editor-header">
+        <div>
+          <h2 id="editor-title">编辑</h2>
+          <p id="editor-subtitle"></p>
+        </div>
+        <button id="editor-close" class="icon-button" type="button" aria-label="关闭">x</button>
+      </header>
+      <div id="editor-body" class="editor-body"></div>
+      <div class="editor-actions">
+        <button id="editor-delete" class="danger secondary" type="button" hidden>删除</button>
+        <span class="spacer"></span>
+        <button id="editor-cancel" class="secondary" type="button">取消</button>
+        <button id="editor-apply" type="submit">确认</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 
 </html>

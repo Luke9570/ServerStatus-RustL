@@ -10,10 +10,10 @@ use std::net::ToSocketAddrs;
 use std::process;
 use std::sync::Mutex;
 use std::thread;
+use std::thread::sleep;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time;
-use std::thread::sleep;
 
 use stat_common::server_status::{IpInfo, StatRequest, SysInfo};
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
@@ -177,7 +177,7 @@ pub struct Args {
 }
 
 impl Args {
-    #[must_use] 
+    #[must_use]
     pub fn skip_iface(&self, name: &str) -> bool {
         if !self.iface.is_empty() {
             if self.iface.iter().any(|fa| name.eq(fa)) {
@@ -361,7 +361,10 @@ async fn main() -> Result<()> {
     // support check
     #[allow(clippy::assertions_on_constants)]
     {
-        assert!(sysinfo::IS_SUPPORTED_SYSTEM, "当前系统不支持，请切换到Python跨平台版本!");
+        assert!(
+            sysinfo::IS_SUPPORTED_SYSTEM,
+            "当前系统不支持，请切换到Python跨平台版本!"
+        );
     }
 
     let sys_info = sys_info::collect_sys_info(&args);

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ex
 
-\rm -rf *.pem *.key *.srl *.csr ssr.ext
+rm -f ca.pem ca.key ca.srl client.pem client.key client.csr server.pem server.key server.csr ssr.ext
 
 cat <<'EOF' >> ssr.ext
 authorityKeyIdentifier=keyid,issuer
@@ -30,4 +30,4 @@ openssl x509 -signkey server.key -in server.csr -req -days 3650 -out server.pem
 openssl x509 -req -CA ca.pem -CAkey ca.key -in server.csr -out server.pem -days 3650 \
     -CAcreateserial -extfile ssr.ext
 
-\rm -rf *.srl *.csr ssr.ext
+rm -f ca.srl client.csr server.csr ssr.ext
