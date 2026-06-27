@@ -142,7 +142,7 @@ impl StatsMgr {
                     trace!("recv stat `{stat:?}");
 
                     let mut stat_t = stat.to_mut();
-                    if crate::admin::deleted_hosts().contains(&stat_t.name) {
+                    if crate::admin::suppressed_hosts().contains(&stat_t.name) {
                         continue;
                     }
 
@@ -284,7 +284,7 @@ impl StatsMgr {
                 let expire_notify = crate::admin::effective_expire_notify(&cfg.expire_notify);
                 let alert_rules = crate::admin::effective_alert_rules();
                 let server_groups = crate::admin::snapshot().server_groups;
-                let deleted_hosts = crate::admin::deleted_hosts();
+                let deleted_hosts = crate::admin::suppressed_hosts();
                 let expire_check_due = expire_notify.enabled && latest_alert_check_ts + expire_notify.interval < now;
 
                 // group gc

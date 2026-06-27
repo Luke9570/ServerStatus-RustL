@@ -98,7 +98,7 @@ fn purge_deleted_hosts(names: Vec<String>) -> Response {
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
         .collect();
-    match admin::forget_deleted_hosts(&names) {
+    match admin::purge_deleted_hosts(&names) {
         Ok(data) => {
             if let Some(stats_mgr) = G_STATS_MGR.get() {
                 stats_mgr.purge_hosts(&purge_set);

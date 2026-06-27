@@ -929,7 +929,7 @@
   }
 
   async function purgeDeletedHost(id) {
-    if (!window.confirm(`彻底删除 ${id} 的已删除记录和当前缓存？如果 Agent 继续上报，同 ID 会重新出现。`)) {
+    if (!window.confirm(`彻底删除 ${id} 的已删除记录和当前缓存？同 ID 的旧 Agent 继续上报也会被拒绝，重新接入请生成新的服务器 ID。`)) {
       return;
     }
     try {
@@ -937,7 +937,7 @@
       state.settings = payload.data || {};
       ensureSettings();
       renderAll();
-      showToast(`${id} 已彻底删除`);
+      showToast(`${id} 已彻底删除，旧 Agent 上报会被拒绝`);
     } catch (err) {
       if (err.authExpired) {
         setView("login");
@@ -951,7 +951,7 @@
     if (!state.deletedHosts.size) {
       return;
     }
-    if (!window.confirm("确定清空所有已删除服务器记录和当前缓存？仍在上报的 Agent 会重新出现。")) {
+    if (!window.confirm("确定清空所有已删除服务器记录和当前缓存？这些同 ID 的旧 Agent 继续上报也会被拒绝。")) {
       return;
     }
     try {
@@ -959,7 +959,7 @@
       state.settings = payload.data || {};
       ensureSettings();
       renderAll();
-      showToast("已清空已删除服务器");
+      showToast("已清空已删除服务器，旧 Agent 上报会被拒绝");
     } catch (err) {
       if (err.authExpired) {
         setView("login");

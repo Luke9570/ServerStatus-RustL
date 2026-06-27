@@ -220,6 +220,8 @@ pub struct AdminData {
     pub groups: HashMap<String, NodeOverride>,
     #[serde(default)]
     pub deleted_hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub purged_hosts: Vec<String>,
     #[serde(default)]
     pub server_groups: Vec<ServerGroupOverride>,
     #[serde(default)]
@@ -307,6 +309,7 @@ pub fn public_snapshot() -> AdminData {
     let mut data = snapshot();
     data.admin_password_hash = None;
     data.admin_session_version = 0;
+    data.purged_hosts.clear();
     for access_key in data.access_keys.values_mut() {
         access_key.password.clear();
     }
@@ -320,11 +323,12 @@ pub fn public_snapshot() -> AdminData {
     data
 }
 
-pub fn deleted_hosts() -> HashSet<String> {
-    snapshot().deleted_hosts.into_iter().collect()
+pub fn suppressed_hosts() -> HashSet<String> {
+    let data = snapshot();
+    data.deleted_hosts.into_iter().chain(data.purged_hosts).collect()
 }
 
-pub fn forget_deleted_hosts(hosts: &[String]) -> Result<AdminData> {
+pub fn purge_deleted_hosts(hosts: &[String]) -> Result<AdminData> {
     let state = ADMIN_STATE.get().expect("admin state not initialized");
     let purge_set: HashSet<String> = hosts
         .iter()
@@ -343,6 +347,7 @@ pub fn forget_deleted_hosts(hosts: &[String]) -> Result<AdminData> {
         .unwrap_or_default();
     let mut data = current;
     data.deleted_hosts.retain(|host| !purge_set.contains(host));
+    data.purged_hosts.extend(purge_set.iter().cloned());
     data.hosts.retain(|host, _| !purge_set.contains(host));
     for group in &mut data.server_groups {
         group.servers.retain(|host| !purge_set.contains(host));
@@ -707,6 +712,7 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
     data.admin_user.clone_from(&current.admin_user);
     data.admin_password_hash.clone_from(&current.admin_password_hash);
     data.admin_session_version = current.admin_session_version;
+    data.purged_hosts.clone_from(&current.purged_hosts);
     if let (Some(next), Some(prev)) = (&mut data.tgbot, &current.tgbot) {
         if next.bot_token.trim().is_empty() {
             next.bot_token.clone_from(&prev.bot_token);
@@ -769,7 +775,22 @@ fn normalize_admin_data(data: &mut AdminData) {
         .collect();
     data.deleted_hosts.sort();
     data.deleted_hosts.dedup();
-    let deleted_hosts: HashSet<String> = data.deleted_hosts.iter().cloned().collect();
+    data.purged_hosts = data
+        .purged_hosts
+        .iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    data.purged_hosts.sort();
+    data.purged_hosts.dedup();
+    let purged_hosts: HashSet<String> = data.purged_hosts.iter().cloned().collect();
+    data.deleted_hosts.retain(|name| !purged_hosts.contains(name));
+    let deleted_hosts: HashSet<String> = data
+        .deleted_hosts
+        .iter()
+        .chain(data.purged_hosts.iter())
+        .cloned()
+        .collect();
     data.hosts
         .retain(|name, _| !name.trim().is_empty() && !deleted_hosts.contains(name));
     for group in &mut data.server_groups {
@@ -1037,5 +1058,39 @@ mod tests {
         assert!(validate_admin_username("bad:name").is_err());
         assert!(validate_admin_username("bad name").is_err());
         assert!(validate_admin_username("a".repeat(MAX_ADMIN_USERNAME_LEN + 1).as_str()).is_err());
+    }
+
+    #[test]
+    fn purged_hosts_are_hidden_from_restore_list_but_remain_suppressed() {
+        let mut data = AdminData {
+            hosts: HashMap::from([
+                ("gone".to_string(), NodeOverride::default()),
+                ("kept".to_string(), NodeOverride::default()),
+            ]),
+            deleted_hosts: vec!["gone".to_string(), "deleted".to_string()],
+            purged_hosts: vec!["gone".to_string()],
+            server_groups: vec![ServerGroupOverride {
+                id: "grp".to_string(),
+                name: "Group".to_string(),
+                servers: vec!["gone".to_string(), "kept".to_string()],
+            }],
+            alert_rules: vec![AlertRuleOverride {
+                id: "rule".to_string(),
+                name: "Rule".to_string(),
+                metric: "offline".to_string(),
+                servers: vec!["gone".to_string(), "kept".to_string()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        normalize_admin_data(&mut data);
+
+        assert_eq!(data.deleted_hosts, vec!["deleted"]);
+        assert_eq!(data.purged_hosts, vec!["gone"]);
+        assert!(!data.hosts.contains_key("gone"));
+        assert!(data.hosts.contains_key("kept"));
+        assert_eq!(data.server_groups[0].servers, vec!["kept"]);
+        assert_eq!(data.alert_rules[0].servers, vec!["kept"]);
     }
 }
