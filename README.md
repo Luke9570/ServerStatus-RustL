@@ -235,6 +235,8 @@ HTTP 上报：
 SSR_RELEASE_REPO=Luke9570/ServerStatus-RustL curl -fsSL "https://example.com/i?..." | bash
 ```
 
+`scripts/one-touch.sh` 与 `scripts/status.sh` 也默认使用 `Luke9570/ServerStatus-RustL` 的 Release；如需使用其它 Release 源，同样可设置 `SSR_RELEASE_REPO`。
+
 ## 自托管部署
 
 ### 二进制 + systemd

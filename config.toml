@@ -240,7 +240,7 @@ enabled = false
     // 返回的 json 结构，#{} 为 Object 对象, [] 为数组
     // 最终结果, 固定结构 [是否发送通知，结果对象]
     [message.len() > 0, #{ embeds: [ #{
-      title: ":bell: ServerStatus-Rust :bell:",
+      title: ":bell: ServerStatus-RustL :bell:",
       fields: [
         #{ name: "Event", value: event, },
         #{ name: "Datetime", value: now_str(), },
@@ -368,7 +368,7 @@ enabled = false
       sound: "minuet.caf",
       icon: "https://day.app/assets/images/avatar.jpg",
       group: "SSR",
-      url: "https://github.com/zdz/ServerStatus-Rust"
+      url: "https://github.com/Luke9570/ServerStatus-RustL"
 
     }]
   """

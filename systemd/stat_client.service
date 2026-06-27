@@ -1,5 +1,5 @@
 [Unit]
-Description=ServerStatus-Rust Client
+Description=ServerStatus-RustL Telemetry Agent
 After=network.target
 
 [Service]

@@ -1,5 +1,5 @@
 #!/bin/bash
-# ServerStatus-Rust client init script
+# ServerStatus-RustL telemetry agent init script
 
 export SSR_PASS={{pass}}
 export SSR_UID={{uid}}
@@ -14,7 +14,7 @@ export SSR_PKG_VERSION={{pkg_version}}
 export SSR_CLIENT_OPTS='{{client_opts}}'
 export SSR_WORKSPACE={{workspace}}
 export SSR_CN={{cn}}
-export SSR_RELEASE_REPO=${SSR_RELEASE_REPO:-zdz/ServerStatus-Rust}
+export SSR_RELEASE_REPO=${SSR_RELEASE_REPO:-Luke9570/ServerStatus-RustL}
 
 Info="\033[32m[info]\033[0m"
 Error="\033[31m[err]\033[0m"
@@ -114,8 +114,8 @@ function download_client() {
     say "start download the stat_client"
 
     if [ "${SSR_CN}" = true ]; then
-        say "using cn mirror: coding.net"
-        wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "https://d0ge-generic.pkg.coding.net/ServerStatus-Rust/releases/client-${arch}-unknown-linux-musl-v{{pkg_version}}.zip?version=v{{pkg_version}}"
+        say "using GitHub release repo: ${SSR_RELEASE_REPO}"
+        wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "https://github.com/${SSR_RELEASE_REPO}/releases/download/v{{pkg_version}}/client-${arch}-unknown-linux-musl.zip"
     else
         wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "https://github.com/${SSR_RELEASE_REPO}/releases/download/v{{pkg_version}}/client-${arch}-unknown-linux-musl.zip"
     fi
@@ -141,7 +141,7 @@ function install_client_service() {
 
     cat > /etc/systemd/system/stat_client.service <<-EOF
 [Unit]
-Description=ServerStatus-Rust Client
+Description=ServerStatus-RustL Telemetry Agent
 After=network.target
 
 [Service]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #=================================================
-#  Description: Serverstat-Rust
+#  Description: ServerStatus-RustL telemetry panel helper
 #  Version: v1.0.3
 #  Updater: Yooona-Lim
 #  Update Description:
@@ -14,6 +14,7 @@ Warning="\033[33m[警告]\033[0m"
 Tip="\033[32m[注意]\033[0m"
 
 working_dir=/opt/ServerStatus
+release_repo=${SSR_RELEASE_REPO:-Luke9570/ServerStatus-RustL}
 
 client_dir="$working_dir/client"
 server_dir="$working_dir/server"
@@ -166,7 +167,7 @@ function check_client() {
 
 # 获取仓库最新版本号,运行可获得 'v1.7.2' 这样的版本号
 function get_latest_version() {
-  api_url="https://api.github.com/repos/zdz/ServerStatus-Rust/releases/latest"
+  api_url="https://api.github.com/repos/${release_repo}/releases/latest"
   local latest_version # 声明和赋值分开写，是编译器给的警告
   latest_version=$(wget -qO- "$api_url" | grep -Po '(?<="tag_name": ")[^"]*')
   echo "$latest_version"
@@ -206,7 +207,7 @@ function write_server() {
     cat >${server_conf} <<-EOF
 #Version=${latest_version}
 [Unit]
-Description=ServerStatus-Rust Server
+Description=ServerStatus-RustL Telemetry Panel
 After=network.target
 
 [Service]
@@ -230,7 +231,7 @@ function write_client() {
     cat >${client_conf} <<-EOF
 #Version=${latest_version}
 [Unit]
-Description=Serverstat-Rust Client
+Description=ServerStatus-RustL Telemetry Agent
 After=network.target
 
 [Service]
@@ -337,15 +338,15 @@ function get_status() {
 
     # 判断为空或者 "-a" "--all"，为空可以兼容前面的函数功能
     if [ -z "$1" ] || [ "$1" = "-a" ] || [ "$1" = "--all" ]; then
-        wget --no-check-certificate -q "${MIRROR}https://github.com/zdz/Serverstatus-Rust/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
-        wget --no-check-certificate -q "${MIRROR}https://github.com/zdz/Serverstatus-Rust/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
+        wget --no-check-certificate -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
+        wget --no-check-certificate -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
         unzip -o server-${arch}-unknown-linux-musl.zip
         unzip -o client-${arch}-unknown-linux-musl.zip
     elif [ "$1" = "-s" ] || [ "$1" = "--server" ]; then
-        wget --no-check-certificate -q "${MIRROR}https://github.com/zdz/Serverstatus-Rust/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
+        wget --no-check-certificate -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
         unzip -o server-${arch}-unknown-linux-musl.zip
     elif [ "$1" = "-c" ] || [ "$1" = "--client" ]; then
-        wget --no-check-certificate -q "${MIRROR}https://github.com/zdz/Serverstatus-Rust/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
+        wget --no-check-certificate -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
         unzip -o client-${arch}-unknown-linux-musl.zip
     else
         echo "无效的参数"
@@ -497,7 +498,7 @@ function ssupgrade() {
     local latest_version
     latest_version=$(get_latest_version)
 
-    echo "Latest version of ServerStatus-Rust: $latest_version"
+    echo "Latest version of ServerStatus-RustL from ${release_repo}: $latest_version"
 
     INCMD="$1"; shift
     case ${INCMD} in

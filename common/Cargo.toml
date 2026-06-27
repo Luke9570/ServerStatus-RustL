@@ -5,12 +5,12 @@ version = "1.1.5"
 
 authors = ["doge <doge.py@gmail.com>"]
 categories = ["monitoring-tools"]
-description = "A simple server monitoring tool"
-keywords = ["stat_common", "serverstatus", "monitor"]
+description = "Shared telemetry protocol types for ServerStatus-RustL"
+keywords = ["serverstatus", "telemetry", "monitor"]
 license = "Apache-2.0"
 readme = "../README.md"
-homepage = "https://github.com/zdz/ServerStatus-Rust"
-repository = "https://github.com/zdz/ServerStatus-Rust"
+homepage = "https://github.com/Luke9570/ServerStatus-RustL"
+repository = "https://github.com/Luke9570/ServerStatus-RustL"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

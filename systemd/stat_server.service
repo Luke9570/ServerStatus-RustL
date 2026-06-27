@@ -1,5 +1,5 @@
 [Unit]
-Description=ServerStatus-Rust Server
+Description=ServerStatus-RustL Telemetry Panel
 After=network.target
 
 [Service]

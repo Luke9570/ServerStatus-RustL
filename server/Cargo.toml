@@ -7,12 +7,12 @@ rust-version = "1.94"
 
 authors = ["doge <doge.py@gmail.com>"]
 categories = ["monitoring-tools"]
-description = "A simple server monitoring tool"
-keywords = ["stat_server", "serverstatus", "monitor"]
+description = "ServerStatus-RustL telemetry panel with admin, expiry, and alert management"
+keywords = ["serverstatus", "telemetry", "monitor"]
 license = "Apache-2.0"
 readme = "../README.md"
-homepage = "https://github.com/zdz/ServerStatus-Rust"
-repository = "https://github.com/zdz/ServerStatus-Rust"
+homepage = "https://github.com/Luke9570/ServerStatus-RustL"
+repository = "https://github.com/Luke9570/ServerStatus-RustL"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -64,7 +64,7 @@ maintainer = "zdz <doge.py@gmail.com>"
 copyright = "2021-present, zdz <doge.py@gmail.com>"
 license-file = ["../LICENSE", "4"]
 extended-description = """\
-A simple server monitoring tool"""
+ServerStatus-RustL telemetry panel with admin, VPS expiry, alert, and notification management."""
 section = "utility"
 priority = "optional"
 assets = [
