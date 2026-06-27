@@ -188,12 +188,7 @@ impl Config {
 
     pub fn to_admin_json_value(&self) -> Value {
         let admin_data = crate::admin::snapshot();
-        let deleted_hosts: std::collections::HashSet<String> = admin_data
-            .deleted_hosts
-            .iter()
-            .chain(admin_data.purged_hosts.iter())
-            .cloned()
-            .collect();
+        let deleted_hosts: std::collections::HashSet<String> = admin_data.deleted_hosts.iter().cloned().collect();
         let hosts: Vec<Value> = self
             .hosts
             .iter()

@@ -111,6 +111,23 @@ impl StatsMgr {
         }
     }
 
+    fn save_stats_snapshot(resp: &StatsResp) {
+        match File::create("stats.json") {
+            Ok(mut file) => {
+                let write_result = serde_json::to_string(resp)
+                    .map_err(std::io::Error::other)
+                    .and_then(|data| file.write_all(data.as_bytes()))
+                    .and_then(|_| file.flush());
+                if write_result.is_ok() {
+                    trace!("save stats.json succ!");
+                } else {
+                    error!("save stats.json fail!");
+                }
+            }
+            Err(_) => error!("save stats.json fail!"),
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::unnecessary_wraps)]
     pub fn init(
@@ -142,7 +159,7 @@ impl StatsMgr {
                     trace!("recv stat `{stat:?}");
 
                     let mut stat_t = stat.to_mut();
-                    if crate::admin::suppressed_hosts().contains(&stat_t.name) {
+                    if crate::admin::deleted_hosts().contains(&stat_t.name) {
                         continue;
                     }
 
@@ -284,7 +301,7 @@ impl StatsMgr {
                 let expire_notify = crate::admin::effective_expire_notify(&cfg.expire_notify);
                 let alert_rules = crate::admin::effective_alert_rules();
                 let server_groups = crate::admin::snapshot().server_groups;
-                let deleted_hosts = crate::admin::suppressed_hosts();
+                let deleted_hosts = crate::admin::deleted_hosts();
                 let expire_check_due = expire_notify.enabled && latest_alert_check_ts + expire_notify.interval < now;
 
                 // group gc
@@ -410,15 +427,7 @@ impl StatsMgr {
                 // last_network_in/out save /60s
                 if latest_save_ts + SAVE_INTERVAL < now {
                     latest_save_ts = now;
-                    if !resp.servers.is_empty() {
-                        if let Ok(mut file) = File::create("stats.json") {
-                            file.write_all(serde_json::to_string(&resp).unwrap().as_bytes());
-                            file.flush();
-                            trace!("save stats.json succ!");
-                        } else {
-                            error!("save stats.json fail!");
-                        }
-                    }
+                    Self::save_stats_snapshot(&resp);
                 }
                 //
                 if let Ok(mut o) = resp_json.lock() {
@@ -473,6 +482,7 @@ impl StatsMgr {
             if let Ok(mut resp_json) = self.resp_json.lock() {
                 *resp_json = serde_json::to_string(&*stats_data).unwrap_or_else(|_| "{}".to_string());
             }
+            Self::save_stats_snapshot(&stats_data);
         }
     }
 
