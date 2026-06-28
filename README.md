@@ -279,10 +279,12 @@ cd /path/to/ServerStatus-RustL
 git fetch origin
 git checkout main
 git pull --ff-only origin main
-docker compose build --no-cache
-docker compose up -d
+docker compose build
+docker compose up -d --force-recreate
 docker compose logs -f
 ```
+
+日常更新不要使用 `docker compose build --no-cache`；该参数会强制 Docker 不复用构建层，Rust 依赖会接近从零编译。项目 Dockerfile 已启用 BuildKit cache mount 缓存 Cargo registry/git/target，普通 `docker compose build` 会明显快得多。只有怀疑基础镜像或依赖缓存损坏时才使用 `--no-cache`。
 
 如果你的 Compose 服务名不是默认值，请把最后几条命令中的服务名按实际 `docker compose ps` 输出调整。更新后建议重新进入后台复制 Agent 接入命令；旧机器上如果已经装过失败的 Agent 服务，可先在 Agent 机器执行：
 
