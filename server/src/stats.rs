@@ -254,7 +254,6 @@ impl StatsMgr {
                             );
                         }
 
-                        info!("update stat `{stat_t:?}");
                         if let Ok(mut host_stat_map) = stat_map.lock() {
                             let mut notify_up = false;
                             if let Some(pre_stat) = host_stat_map.get(&stat_t.name) {
@@ -266,6 +265,8 @@ impl StatsMgr {
                                     notify_up = true;
                                 }
                             }
+                            fill_auto_location_type(&mut stat_t);
+                            info!("update stat `{stat_t:?}");
                             let arc_stat = Arc::new(stat.into_owned());
                             if notify_up {
                                 // node up notify
@@ -623,6 +624,122 @@ fn stat_with_custom(stat: &HostStat, custom: String) -> Arc<HostStat> {
     Arc::new(stat)
 }
 
+fn fill_auto_location_type(stat: &mut HostStat) {
+    if stat.location.trim().is_empty() {
+        if let Some(location) = infer_location_code(stat.ip_info.as_ref()) {
+            stat.location = location;
+        }
+    }
+    if stat.host_type.trim().is_empty() {
+        if let Some(host_type) = infer_host_type(stat.sys_info.as_ref()) {
+            stat.host_type = host_type;
+        }
+    }
+}
+
+fn infer_host_type(sys_info: Option<&stat_common::server_status::SysInfo>) -> Option<String> {
+    let arch = sys_info?.os_arch.trim().to_lowercase();
+    if arch.is_empty() {
+        return None;
+    }
+    let normalized = match arch.as_str() {
+        "amd64" => "x86_64",
+        "x64" => "x86_64",
+        "arm64" => "aarch64",
+        _ => arch.as_str(),
+    };
+    Some(normalized.to_string())
+}
+
+fn infer_location_code(ip_info: Option<&stat_common::server_status::IpInfo>) -> Option<String> {
+    let ip_info = ip_info?;
+    country_to_code(&ip_info.country).or_else(|| timezone_to_country_code(&ip_info.timezone))
+}
+
+fn country_to_code(country: &str) -> Option<String> {
+    let normalized = country
+        .trim()
+        .to_lowercase()
+        .replace(['.', ',', '_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    if normalized.len() == 2 && normalized.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Some(normalized);
+    }
+    let code = match normalized.as_str() {
+        "argentina" => "ar",
+        "australia" => "au",
+        "austria" => "at",
+        "belgium" => "be",
+        "brazil" => "br",
+        "bulgaria" => "bg",
+        "canada" => "ca",
+        "chile" => "cl",
+        "china" => "cn",
+        "czechia" | "czech republic" => "cz",
+        "denmark" => "dk",
+        "finland" => "fi",
+        "france" => "fr",
+        "germany" => "de",
+        "hong kong" => "hk",
+        "india" => "in",
+        "indonesia" => "id",
+        "ireland" => "ie",
+        "israel" => "il",
+        "italy" => "it",
+        "japan" => "jp",
+        "luxembourg" => "lu",
+        "macao" | "macau" => "mo",
+        "malaysia" => "my",
+        "mexico" => "mx",
+        "netherlands" | "the netherlands" => "nl",
+        "new zealand" => "nz",
+        "norway" => "no",
+        "philippines" => "ph",
+        "poland" => "pl",
+        "portugal" => "pt",
+        "romania" => "ro",
+        "russia" | "russian federation" => "ru",
+        "singapore" => "sg",
+        "south africa" => "za",
+        "south korea" | "korea republic of" | "republic of korea" => "kr",
+        "spain" => "es",
+        "sweden" => "se",
+        "switzerland" => "ch",
+        "taiwan" => "tw",
+        "thailand" => "th",
+        "turkey" | "turkiye" => "tr",
+        "ukraine" => "ua",
+        "united arab emirates" => "ae",
+        "united kingdom" | "great britain" | "uk" => "gb",
+        "united states" | "united states of america" | "usa" => "us",
+        "vietnam" | "viet nam" => "vn",
+        _ => return None,
+    };
+    Some(code.to_string())
+}
+
+fn timezone_to_country_code(timezone: &str) -> Option<String> {
+    let normalized = timezone.trim().to_lowercase();
+    let code = match normalized.as_str() {
+        "america/los_angeles" | "america/denver" | "america/chicago" | "america/new_york" => "us",
+        "asia/hong_kong" => "hk",
+        "asia/macau" => "mo",
+        "asia/singapore" => "sg",
+        "asia/tokyo" => "jp",
+        "asia/seoul" => "kr",
+        "asia/taipei" => "tw",
+        "asia/shanghai" => "cn",
+        "europe/london" => "gb",
+        "europe/amsterdam" => "nl",
+        "europe/berlin" => "de",
+        "europe/paris" => "fr",
+        _ => return None,
+    };
+    Some(code.to_string())
+}
+
 fn metric_value(stat: &HostStat, metric: &str) -> Option<f64> {
     match metric {
         "cpu" => Some(stat.cpu),
@@ -667,6 +784,59 @@ fn usage_alert_message(
         threshold,
         rule.duration
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stat_common::server_status::{IpInfo, SysInfo};
+
+    #[test]
+    fn infers_common_country_names() {
+        assert_eq!(country_to_code("United States"), Some("us".to_string()));
+        assert_eq!(country_to_code("Hong Kong"), Some("hk".to_string()));
+        assert_eq!(country_to_code("Macao"), Some("mo".to_string()));
+        assert_eq!(country_to_code("GB"), Some("gb".to_string()));
+    }
+
+    #[test]
+    fn fills_empty_location_and_type_from_telemetry() {
+        let mut stat = HostStat {
+            ip_info: Some(IpInfo {
+                country: "United States".to_string(),
+                timezone: "America/Los_Angeles".to_string(),
+                ..Default::default()
+            }),
+            sys_info: Some(SysInfo {
+                os_arch: "x86_64".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        fill_auto_location_type(&mut stat);
+        assert_eq!(stat.location, "us");
+        assert_eq!(stat.host_type, "x86_64");
+    }
+
+    #[test]
+    fn keeps_manual_location_and_type() {
+        let mut stat = HostStat {
+            location: "jp".to_string(),
+            host_type: "kvm".to_string(),
+            ip_info: Some(IpInfo {
+                country: "United States".to_string(),
+                ..Default::default()
+            }),
+            sys_info: Some(SysInfo {
+                os_arch: "aarch64".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        fill_auto_location_type(&mut stat);
+        assert_eq!(stat.location, "jp");
+        assert_eq!(stat.host_type, "kvm");
+    }
 }
 
 trait HostStatLabel {

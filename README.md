@@ -124,6 +124,8 @@ docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{println $na
 
 后台复制的一键接入命令会从面板访问地址拉取安装脚本；安装脚本内部启动 `stat_client` 时才会使用 Agent 上报地址。
 
+如果 Agent 上报域名在 Nginx Proxy Manager 中开启了 Force SSL，后台“Agent 上报地址”也应填写 `https://...`，并重新复制接入命令安装 Agent，不要依赖旧 HTTP 命令被 301 跳转。
+
 这适合以下部署方式：
 
 ```text
