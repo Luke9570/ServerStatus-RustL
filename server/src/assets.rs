@@ -26,6 +26,21 @@ pub fn static_handler(uri: &Uri) -> impl IntoResponse {
 
 pub struct StaticFile<T>(pub T);
 
+fn cache_control_for(path: &str) -> &'static str {
+    if matches!(path, "/" | "/index.html" | "/admin.html") || path.ends_with(".html") {
+        return "no-store, no-cache, must-revalidate";
+    }
+
+    if matches!(
+        path,
+        "/static/js/expiry.js" | "/static/css/expiry.css" | "/static/js/admin.js" | "/static/css/admin.css"
+    ) {
+        return "no-cache, must-revalidate";
+    }
+
+    "public, max-age=3600"
+}
+
 impl<T> IntoResponse for StaticFile<T>
 where
     T: Into<String>,
@@ -34,8 +49,15 @@ where
         let path = self.0.into();
         match Asset::get(path.as_str()) {
             Some(content) => {
-                let mime = mime_guess::from_path(path).first_or_octet_stream();
-                ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+                let mime = mime_guess::from_path(&path).first_or_octet_stream();
+                (
+                    [
+                        (header::CONTENT_TYPE, mime.as_ref()),
+                        (header::CACHE_CONTROL, cache_control_for(path.as_str())),
+                    ],
+                    content.data,
+                )
+                    .into_response()
             }
             None => (StatusCode::NOT_FOUND, "404").into_response(),
         }

@@ -3,10 +3,44 @@
   const SOURCE_URL = "/json/stats.json";
   const ATTENTION_DAYS = 30;
   let latestServers = [];
+  let nativeFetch = null;
   let decoratePending = false;
   let decorateRetries = 0;
+  let renderRetryAttempts = 0;
   let isDecorating = false;
   let rowObserver = null;
+
+  function isStatsRequest(input) {
+    const url = typeof input === "string" ? input : input && typeof input.url === "string" ? input.url : "";
+    if (!url) {
+      return false;
+    }
+    try {
+      return new URL(url, window.location.href).pathname === "/json/stats.json";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function installStatsFetchBridge() {
+    if (!window.fetch || window.__ssrExpiryFetchBridge) {
+      return;
+    }
+
+    nativeFetch = window.fetch.bind(window);
+    window.__ssrExpiryFetchBridge = true;
+    window.fetch = async (...args) => {
+      const response = await nativeFetch(...args);
+      if (isStatsRequest(args[0])) {
+        response
+          .clone()
+          .json()
+          .then(render)
+          .catch((err) => console.debug("expiry bridge failed", err));
+      }
+      return response;
+    };
+  }
 
   function hasExpiry(server) {
     return Boolean(server && server.expire && server.expire.configured);
@@ -234,7 +268,11 @@
       return panel;
     }
 
-    const body = document.getElementById("body") || document.body;
+    const body = document.getElementById("body");
+    if (!body) {
+      return null;
+    }
+
     panel = document.createElement("section");
     panel.id = PANEL_ID;
     panel.className = "ssr-expiry-panel";
@@ -288,10 +326,13 @@
 
   function renderPanel(servers, updated) {
     const panel = ensurePanel();
+    if (!panel) {
+      return false;
+    }
 
     if (servers.length === 0) {
       renderEmptyPanel(panel, updated);
-      return;
+      return true;
     }
 
     const configured = servers.filter((server) => hasExpiry(server) && !treatAsMissing(server)).sort(sortByDue);
@@ -357,6 +398,7 @@
 
     panel.hidden = false;
     panel.replaceChildren(header, list);
+    return true;
   }
 
   function rowLine(server) {
@@ -512,14 +554,21 @@
     latestServers = servers;
     decorateRetries = 0;
     setMainContentVisible(servers.length > 0);
-    renderPanel(servers, data.updated);
+    const panelRendered = renderPanel(servers, data.updated);
     observeTableUpdates();
     scheduleRowDecoration();
+
+    if (panelRendered) {
+      renderRetryAttempts = 0;
+    } else if (renderRetryAttempts < 40) {
+      renderRetryAttempts += 1;
+      window.setTimeout(() => render(data), 80);
+    }
   }
 
   async function refresh() {
     try {
-      const response = await fetch(SOURCE_URL, { cache: "no-store" });
+      const response = await (nativeFetch || window.fetch)(SOURCE_URL, { cache: "no-store" });
       if (!response.ok) {
         return;
       }
@@ -528,6 +577,8 @@
       console.debug("expiry refresh failed", err);
     }
   }
+
+  installStatsFetchBridge();
 
   if (document.readyState === "loading") {
     document.addEventListener(
