@@ -31,7 +31,8 @@ web/jinja/              Agent 一键接入脚本模板
 scripts/                systemd 安装/管理辅助脚本
 systemd/                stat_server/stat_client systemd 示例
 config.toml             示例配置
-docker-compose.yml      本地自托管 Docker Compose 示例
+docker-compose.yml      GHCR 预构建镜像 Docker Compose 示例
+docker-compose.build.yml 本地源码构建 Docker Compose override
 ```
 
 关键文件：
@@ -265,26 +266,37 @@ systemctl enable --now stat_server
 
 ### Docker Compose
 
-当前 Compose 使用本地源码构建镜像，并把运行时文件放在 `runtime/`：
+当前 Compose 默认使用 GitHub Actions 发布到 GHCR 的预构建镜像，并把运行时文件放在 `runtime/`：
 
 ```bash
 mkdir -p runtime
-docker compose up -d --build
+docker network create proxy 2>/dev/null || true
+docker compose pull
+docker compose up -d
 ```
 
-VPS 上从 GitHub 更新当前主线代码并重建容器：
+VPS 上从 GitHub 更新当前主线代码并拉取新镜像：
 
 ```bash
 cd /path/to/ServerStatus-RustL
 git fetch origin
 git checkout main
 git pull --ff-only origin main
-docker compose build
+docker compose pull
 docker compose up -d --force-recreate
 docker compose logs -f
 ```
 
-日常更新不要使用 `docker compose build --no-cache`；该参数会强制 Docker 不复用构建层，Rust 依赖会接近从零编译。项目 Dockerfile 已启用 BuildKit cache mount 缓存 Cargo registry/git/target，普通 `docker compose build` 会明显快得多。只有怀疑基础镜像或依赖缓存损坏时才使用 `--no-cache`。
+如果 `docker compose pull` 提示没有权限，请到 GitHub Packages 将 `serverstatus-rustl` 容器包设为 Public；或在 VPS 使用有 `read:packages` 权限的 token 执行 `docker login ghcr.io`。
+
+日常更新不需要在 VPS 上 `docker compose build`。如需在本机或 VPS 从源码构建调试镜像，再使用：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --force-recreate
+```
+
+不要日常使用 `docker compose build --no-cache`；该参数会强制 Docker 不复用构建层，Rust 依赖会接近从零编译。项目 Dockerfile 已启用 BuildKit cache mount 缓存 Cargo registry/git/target，普通本地构建会明显快得多。只有怀疑基础镜像或依赖缓存损坏时才使用 `--no-cache`。
 
 如果你的 Compose 服务名不是默认值，请把最后几条命令中的服务名按实际 `docker compose ps` 输出调整。更新后建议重新进入后台复制 Agent 接入命令；旧机器上如果已经装过失败的 Agent 服务，可先在 Agent 机器执行：
 

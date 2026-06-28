@@ -6,6 +6,8 @@ WORKDIR /app
 
 RUN apk add --no-cache musl-dev linux-headers zlib-dev git cmake make g++
 
+ARG TARGETARCH
+
 ENV CARGO_PROFILE_RELEASE_LTO=false \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 
@@ -25,14 +27,14 @@ RUN mkdir -p common/src server/src client/src \
 
 RUN --mount=type=cache,id=serverstatus-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=serverstatus-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=serverstatus-target,target=/app/target \
+    --mount=type=cache,id=serverstatus-target-${TARGETARCH},target=/app/target \
     cargo build --release -p stat_server --locked
 
 COPY ./ /app
 
 RUN --mount=type=cache,id=serverstatus-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=serverstatus-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=serverstatus-target,target=/app/target \
+    --mount=type=cache,id=serverstatus-target-${TARGETARCH},target=/app/target \
     cargo build --release -p stat_server --locked \
     && cp /app/target/release/stat_server /app/stat_server \
     && strip /app/stat_server

@@ -1,0 +1,4 @@
+services:
+  stat_server:
+    build: .
+    image: serverstatus-rustl:local

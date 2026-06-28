@@ -1,7 +1,6 @@
 services:
   stat_server:
-    build: .
-    image: serverstatus-rustl:local
+    image: ghcr.io/luke9570/serverstatus-rustl:latest
     container_name: stat_server
     restart: unless-stopped
     working_dir: /data
