@@ -332,6 +332,22 @@
   color: #cbd5e1;
 }
 
+#ssr-table th:first-child,
+#ssr-table td:first-child {
+  width: 8.75rem !important;
+  min-width: 8.75rem !important;
+  max-width: 12rem;
+}
+
+#ssr-table td:first-child > div {
+  max-width: 11.5rem;
+  margin-right: 0;
+  margin-left: 0;
+  padding-right: 8px;
+  padding-left: 6px;
+  text-align: left;
+}
+
 @media (max-width: 720px) {
   .ssr-expiry-panel {
     margin: 8px 8px 12px;
@@ -357,5 +373,16 @@
   .ssr-expiry-renewal,
   .ssr-expiry-billing {
     display: none;
+  }
+
+  #ssr-table th:first-child,
+  #ssr-table td:first-child {
+    width: 7.5rem !important;
+    min-width: 7.5rem !important;
+  }
+
+  #ssr-table td:first-child > div {
+    max-width: 7rem;
+    padding-left: 4px;
   }
 }
