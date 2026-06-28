@@ -2,6 +2,11 @@
   const PANEL_ID = "ssr-expiry-panel";
   const SOURCE_URL = "/json/stats.json";
   const ATTENTION_DAYS = 30;
+  let latestServers = [];
+  let decoratePending = false;
+  let decorateRetries = 0;
+  let isDecorating = false;
+  let rowObserver = null;
 
   function hasExpiry(server) {
     return Boolean(server && server.expire && server.expire.configured);
@@ -416,29 +421,100 @@
     return wrap;
   }
 
+  function replaceManagedNode(container, selector, nextNode) {
+    const existing = [...container.querySelectorAll(selector)];
+    existing.slice(1).forEach((node) => node.remove());
+
+    const current = existing[0];
+    if (current && current.outerHTML === nextNode.outerHTML) {
+      return false;
+    }
+    if (current) {
+      current.replaceWith(nextNode);
+    } else {
+      container.append(nextNode);
+    }
+    return true;
+  }
+
   function decorateRows(servers) {
+    let matchedRows = 0;
+    let changedRows = 0;
+    isDecorating = true;
+
     servers.forEach((server, index) => {
       const row = document.getElementById(`r-${index}`);
       const cell = row ? row.querySelector("td:first-child") : null;
       if (cell) {
-        cell.querySelectorAll(".ssr-row-expiry").forEach((node) => node.remove());
-        cell.append(rowLine(server));
+        matchedRows += 1;
+        if (replaceManagedNode(cell, ".ssr-row-expiry", rowLine(server))) {
+          changedRows += 1;
+        }
       }
 
       const expanded = document.getElementById(`r-${index}-expand`);
       const expandedGrid = expanded ? expanded.querySelector("td > div") : null;
       if (expandedGrid) {
-        expandedGrid.querySelectorAll(".ssr-expanded-expiry").forEach((node) => node.remove());
-        expandedGrid.append(detailLine(server));
+        if (replaceManagedNode(expandedGrid, ".ssr-expanded-expiry", detailLine(server))) {
+          changedRows += 1;
+        }
       }
     });
+
+    isDecorating = false;
+    return { matchedRows, changedRows };
+  }
+
+  function scheduleRowDecoration(delay = 0) {
+    if (!latestServers.length || decoratePending) {
+      return;
+    }
+
+    decoratePending = true;
+    const run = () => {
+      decoratePending = false;
+      const result = decorateRows(latestServers);
+      if (result.matchedRows < latestServers.length && decorateRetries < 20) {
+        decorateRetries += 1;
+        scheduleRowDecoration(80);
+      }
+    };
+
+    if (delay > 0) {
+      window.setTimeout(run, delay);
+      return;
+    }
+    window.requestAnimationFrame(run);
+  }
+
+  function observeTableUpdates() {
+    if (rowObserver) {
+      return;
+    }
+
+    const root = document.getElementById("root");
+    if (!root) {
+      return;
+    }
+
+    rowObserver = new MutationObserver(() => {
+      if (isDecorating || !latestServers.length) {
+        return;
+      }
+      decorateRetries = 0;
+      scheduleRowDecoration();
+    });
+    rowObserver.observe(root, { childList: true, subtree: true });
   }
 
   function render(data) {
     const servers = Array.isArray(data.servers) ? data.servers : [];
+    latestServers = servers;
+    decorateRetries = 0;
     setMainContentVisible(servers.length > 0);
     renderPanel(servers, data.updated);
-    decorateRows(servers);
+    observeTableUpdates();
+    scheduleRowDecoration();
   }
 
   async function refresh() {
@@ -454,8 +530,16 @@
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", refresh, { once: true });
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        observeTableUpdates();
+        refresh();
+      },
+      { once: true },
+    );
   } else {
+    observeTableUpdates();
     refresh();
   }
   setInterval(refresh, 5_000);

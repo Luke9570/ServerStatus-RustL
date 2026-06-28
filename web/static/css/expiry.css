@@ -334,14 +334,14 @@
 
 #ssr-table th:first-child,
 #ssr-table td:first-child {
-  width: clamp(14rem, 22vw, 24rem) !important;
-  min-width: clamp(14rem, 22vw, 24rem) !important;
-  max-width: 24rem;
-  text-align: left;
+  width: clamp(10.25rem, 14vw, 13rem) !important;
+  min-width: clamp(10.25rem, 14vw, 13rem) !important;
+  max-width: 13rem;
+  text-align: center;
 }
 
 #ssr-table th:first-child {
-  padding-left: 22px;
+  padding-left: 11px;
 }
 
 #ssr-table td:first-child > div {
@@ -349,10 +349,10 @@
   max-width: none;
   margin-right: 0;
   margin-left: 0;
-  padding-right: 18px;
-  padding-left: 14px;
+  padding-right: 10px;
+  padding-left: 10px;
   line-height: 1.35;
-  text-align: left;
+  text-align: center;
 }
 
 @media (max-width: 720px) {
@@ -384,16 +384,16 @@
 
   #ssr-table th:first-child,
   #ssr-table td:first-child {
-    width: clamp(11rem, 54vw, 15rem) !important;
-    min-width: clamp(11rem, 54vw, 15rem) !important;
+    width: clamp(9.25rem, 42vw, 11.5rem) !important;
+    min-width: clamp(9.25rem, 42vw, 11.5rem) !important;
   }
 
   #ssr-table th:first-child {
-    padding-left: 16px;
+    padding-left: 11px;
   }
 
   #ssr-table td:first-child > div {
-    padding-right: 12px;
-    padding-left: 10px;
+    padding-right: 7px;
+    padding-left: 7px;
   }
 }
