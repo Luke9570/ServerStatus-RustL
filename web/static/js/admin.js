@@ -1107,7 +1107,7 @@
     const currentAgentUrl = normalizeBaseUrl($("#agent-base-url")?.value || "");
     const savedAccessUrl = normalizeBaseUrl(state.settings?.access_base_url || "");
     const currentAccessUrl = normalizeBaseUrl($("#access-base-url")?.value || "");
-    return (savedAgentUrl || savedAccessUrl) !== (currentAgentUrl || currentAccessUrl);
+    return savedAgentUrl !== currentAgentUrl || savedAccessUrl !== currentAccessUrl;
   }
 
   function commandOption(labelText, className, checked) {

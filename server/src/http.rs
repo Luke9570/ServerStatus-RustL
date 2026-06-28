@@ -255,7 +255,7 @@ fn access_command_response(
         }
     }
 
-    let install_url = format!("{}/i?{}", agent_url.trim_end_matches('/'), query.join("&"));
+    let install_url = format!("{}/i?{}", panel_url.trim_end_matches('/'), query.join("&"));
     let script = format!("curl -fsSL {} | bash", shell_quote(&install_url));
 
     Json(json!({
