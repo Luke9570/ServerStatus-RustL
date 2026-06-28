@@ -266,7 +266,7 @@ systemctl enable --now stat_server
 
 ### Docker Compose
 
-当前 Compose 默认使用 GitHub Actions 发布到 GHCR 的预构建镜像，并把运行时文件放在 `runtime/`：
+当前 Compose 默认使用 GitHub Actions 发布到 GHCR 的 `linux/amd64` 预构建镜像，并把运行时文件放在 `runtime/`：
 
 ```bash
 mkdir -p runtime
