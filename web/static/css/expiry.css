@@ -334,18 +334,24 @@
 
 #ssr-table th:first-child,
 #ssr-table td:first-child {
-  width: clamp(10rem, 16vw, 18rem) !important;
-  min-width: clamp(10rem, 16vw, 18rem) !important;
-  max-width: 18rem;
+  width: clamp(14rem, 22vw, 24rem) !important;
+  min-width: clamp(14rem, 22vw, 24rem) !important;
+  max-width: 24rem;
+  text-align: left;
+}
+
+#ssr-table th:first-child {
+  padding-left: 22px;
 }
 
 #ssr-table td:first-child > div {
-  width: max-content;
-  max-width: 17.5rem;
+  width: 100%;
+  max-width: none;
   margin-right: 0;
   margin-left: 0;
-  padding-right: 8px;
-  padding-left: 6px;
+  padding-right: 18px;
+  padding-left: 14px;
+  line-height: 1.35;
   text-align: left;
 }
 
@@ -378,12 +384,16 @@
 
   #ssr-table th:first-child,
   #ssr-table td:first-child {
-    width: clamp(8.75rem, 42vw, 12rem) !important;
-    min-width: clamp(8.75rem, 42vw, 12rem) !important;
+    width: clamp(11rem, 54vw, 15rem) !important;
+    min-width: clamp(11rem, 54vw, 15rem) !important;
+  }
+
+  #ssr-table th:first-child {
+    padding-left: 16px;
   }
 
   #ssr-table td:first-child > div {
-    max-width: 11.5rem;
-    padding-left: 4px;
+    padding-right: 12px;
+    padding-left: 10px;
   }
 }
