@@ -41,6 +41,39 @@
     ["HalfYear", "每半年"],
     ["Year", "每年"],
   ];
+  const currencyOptions = [
+    ["USD", "USD"],
+    ["EUR", "EUR"],
+    ["GBP", "GBP"],
+    ["CNY", "CNY"],
+    ["HKD", "HKD"],
+    ["MOP", "MOP"],
+    ["TWD", "TWD"],
+    ["JPY", "JPY"],
+    ["KRW", "KRW"],
+    ["SGD", "SGD"],
+    ["AUD", "AUD"],
+    ["CAD", "CAD"],
+    ["NZD", "NZD"],
+    ["MYR", "MYR"],
+    ["THB", "THB"],
+    ["VND", "VND"],
+    ["PHP", "PHP"],
+    ["IDR", "IDR"],
+    ["INR", "INR"],
+    ["BRL", "BRL"],
+    ["TRY", "TRY"],
+    ["RUB", "RUB"],
+    ["CUSTOM", "自定义"],
+  ];
+  const currencySymbols = new Map([
+    ["$", "USD"],
+    ["€", "EUR"],
+    ["£", "GBP"],
+    ["¥", "JPY"],
+    ["￥", "CNY"],
+    ["₩", "KRW"],
+  ]);
   const metricOptions = [
     ["offline", "离线"],
     ["cpu", "CPU 使用率"],
@@ -325,6 +358,44 @@
     return node;
   }
 
+  function datePicker(className, value) {
+    const wrap = el("div", "date-field");
+    const node = input(className, normalizeDateValue(value), "date");
+    node.placeholder = "YYYY-MM-DD";
+    node.min = "1970-01-01";
+    node.max = "9999-12-31";
+    node.title = "请选择日期，保存格式固定为 YYYY-MM-DD";
+    const button = iconButton("打开日历", "calendar");
+    button.classList.add("date-picker-button");
+    button.addEventListener("click", () => {
+      if (typeof node.showPicker === "function") {
+        node.showPicker();
+      } else {
+        node.focus();
+      }
+    });
+    wrap.append(node, button);
+    return wrap;
+  }
+
+  function moneyControl(value) {
+    const parsed = parsedAmount(value);
+    const wrap = el("div", "money-field");
+    const amount = input("js-server-amount", parsed.amount, "number");
+    amount.min = "0";
+    amount.step = "0.01";
+    amount.inputMode = "decimal";
+    amount.placeholder = "金额";
+    const currency = select(currencyOptions, parsed.currency, "js-server-currency");
+    const custom = input("js-server-currency-custom", parsed.customCurrency);
+    custom.placeholder = "货币";
+    custom.maxLength = 3;
+    custom.pattern = "[A-Za-z]{3}";
+    custom.title = "自定义货币请输入 3 位字母代码，例如 USD、EUR、HKD";
+    wrap.append(amount, currency, custom);
+    return wrap;
+  }
+
   function checkbox(checked) {
     const node = document.createElement("input");
     node.type = "checkbox";
@@ -354,6 +425,12 @@
     return label;
   }
 
+  function hintField(labelText, control, hint, className = "") {
+    const label = field(labelText, control, className);
+    label.append(el("span", "field-hint", hint));
+    return label;
+  }
+
   function svgIcon(name) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
@@ -378,6 +455,12 @@
       monitor: ["M4 5h16v11H4Z", "M9 21h6", "M12 16v5"],
       user: ["M20 21a8 8 0 0 0-16 0", "M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"],
       "log-out": ["M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4", "M16 17l5-5-5-5", "M21 12H9"],
+      calendar: [
+        "M8 2v4",
+        "M16 2v4",
+        "M3 10h18",
+        "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z",
+      ],
     };
     for (const d of paths[name] || []) {
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -552,6 +635,77 @@
 
   function isFreeAmount(value) {
     return freeValues.has(String(value || "").trim().toLowerCase());
+  }
+
+  function normalizeDateValue(value) {
+    const textValue = String(value || "").trim();
+    const match = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(textValue);
+    if (!match) {
+      return "";
+    }
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+      return "";
+    }
+    return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
+  function parsedAmount(value) {
+    const raw = String(value || "").trim();
+    if (!raw || isFreeAmount(raw)) {
+      return { amount: "", currency: "USD", customCurrency: "" };
+    }
+
+    const symbol = raw.slice(0, 1);
+    const symbolCurrency = currencySymbols.get(symbol);
+    if (symbolCurrency) {
+      return {
+        amount: raw.slice(1).trim().replace(",", "."),
+        currency: symbolCurrency,
+        customCurrency: "",
+      };
+    }
+
+    const trailing = /^(\d+(?:[.,]\d+)?)\s*([A-Za-z]{3})$/.exec(raw);
+    if (trailing) {
+      const code = trailing[2].toUpperCase();
+      const known = currencyOptions.some(([item]) => item === code);
+      return {
+        amount: trailing[1].replace(",", "."),
+        currency: known ? code : "CUSTOM",
+        customCurrency: known ? "" : code,
+      };
+    }
+
+    const leading = /^([A-Za-z]{3})\s*(\d+(?:[.,]\d+)?)$/.exec(raw);
+    if (leading) {
+      const code = leading[1].toUpperCase();
+      const known = currencyOptions.some(([item]) => item === code);
+      return {
+        amount: leading[2].replace(",", "."),
+        currency: known ? code : "CUSTOM",
+        customCurrency: known ? "" : code,
+      };
+    }
+
+    const numeric = /^(\d+(?:[.,]\d+)?)$/.exec(raw);
+    if (numeric) {
+      return { amount: numeric[1].replace(",", "."), currency: "USD", customCurrency: "" };
+    }
+
+    return { amount: raw, currency: "CUSTOM", customCurrency: "" };
+  }
+
+  function composeAmount(amountValue, currencyValue, customCurrencyValue) {
+    const amount = String(amountValue || "").trim();
+    if (!amount) {
+      return "";
+    }
+    const currency = currencyValue === "CUSTOM" ? String(customCurrencyValue || "").trim().toUpperCase() : currencyValue;
+    return currency ? `${amount} ${currency}` : amount;
   }
 
   function amountDisplay(value) {
@@ -1294,10 +1448,10 @@
       field("私有备注", input("js-server-note", item.note || ""), "wide"),
       field("规格", input("js-server-spec", item.spec || "")),
       field("期限类型", select([["date", "到期日"], ["permanent", "永久"], ["none", "未设置"]], expireMode, "js-server-expire-mode")),
-      field("到期日", input("js-server-expire", isPermanentExpire(item.billing.end_date) ? "" : item.billing.end_date || "")),
+      hintField("到期日", datePicker("js-server-expire", isPermanentExpire(item.billing.end_date) ? "" : item.billing.end_date || ""), "固定格式 YYYY-MM-DD，例如 2026-11-25"),
       field("周期", select(cycleOptions, item.billing.cycle || "", "js-server-cycle")),
       field("费用类型", select([["paid", "付费"], ["free", "免费"]], feeMode, "js-server-fee-mode")),
-      field("金额", input("js-server-amount", isFreeAmount(item.billing.amount) ? "" : item.billing.amount || "")),
+      hintField("金额 / 货币", moneyControl(isFreeAmount(item.billing.amount) ? "" : item.billing.amount || ""), "保存为“金额 货币”，例如 200 EUR"),
     );
     const auto = checkbox(["1", "true", "yes", "on"].includes(String(item.billing.auto_renewal).toLowerCase()));
     auto.className = "js-server-auto";
@@ -1308,6 +1462,11 @@
     syncServerEditorControls();
     $(".js-server-expire-mode").addEventListener("change", syncServerEditorControls);
     $(".js-server-fee-mode").addEventListener("change", syncServerEditorControls);
+    $(".js-server-currency").addEventListener("change", syncServerEditorControls);
+    $(".js-server-amount").addEventListener("input", syncServerEditorControls);
+    $(".js-server-currency-custom").addEventListener("input", (event) => {
+      event.target.value = event.target.value.toUpperCase();
+    });
   }
 
   function syncServerEditorControls() {
@@ -1315,14 +1474,23 @@
     const feeMode = $(".js-server-fee-mode")?.value || "paid";
     const dateMode = expireMode === "date";
     $(".js-server-expire").disabled = !dateMode;
+    $(".js-server-expire").required = dateMode;
     $(".js-server-cycle").disabled = !dateMode;
     $(".js-server-auto").disabled = !dateMode;
     if (!dateMode) {
       $(".js-server-auto").checked = false;
     }
-    $(".js-server-amount").disabled = feeMode === "free";
+    const freeMode = feeMode === "free";
+    const customCurrency = $(".js-server-currency")?.value === "CUSTOM";
+    $(".money-field")?.classList.toggle("has-custom-currency", !freeMode && customCurrency);
+    $(".js-server-amount").disabled = freeMode;
+    $(".js-server-currency").disabled = freeMode;
+    $(".js-server-currency-custom").disabled = freeMode || !customCurrency;
+    $(".js-server-currency-custom").hidden = freeMode || !customCurrency;
+    $(".js-server-currency-custom").required = !freeMode && customCurrency && Boolean($(".js-server-amount").value.trim());
     if (feeMode === "free") {
       $(".js-server-amount").value = "";
+      $(".js-server-currency-custom").value = "";
     }
   }
 
@@ -1348,22 +1516,78 @@
     return $$(`${selector} input:checked`).map((inputNode) => inputNode.value);
   }
 
+  function readServerExpireDate(expireMode) {
+    if (expireMode === "permanent") {
+      return "0000-00-00";
+    }
+    if (expireMode === "none") {
+      return "";
+    }
+
+    const inputNode = $(".js-server-expire");
+    const normalized = normalizeDateValue(inputNode.value);
+    inputNode.setCustomValidity("");
+    if (!normalized) {
+      inputNode.setCustomValidity("请选择有效到期日，格式为 YYYY-MM-DD");
+      inputNode.reportValidity();
+      inputNode.focus();
+      throw new Error("请选择有效到期日，格式为 YYYY-MM-DD");
+    }
+    return normalized;
+  }
+
+  function readServerAmount(feeMode) {
+    if (feeMode === "free") {
+      return "free";
+    }
+
+    const amountInput = $(".js-server-amount");
+    const currencySelect = $(".js-server-currency");
+    const customInput = $(".js-server-currency-custom");
+    const amount = amountInput.value.trim();
+    amountInput.setCustomValidity("");
+    customInput.setCustomValidity("");
+
+    if (!amount) {
+      return "";
+    }
+
+    const currency = currencySelect.value === "CUSTOM" ? customInput.value.trim().toUpperCase() : currencySelect.value;
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      customInput.setCustomValidity("请输入 3 位货币代码，例如 USD、EUR、HKD");
+      customInput.reportValidity();
+      customInput.focus();
+      throw new Error("请输入 3 位货币代码，例如 USD、EUR、HKD");
+    }
+    return composeAmount(amount, currencySelect.value, currency);
+  }
+
   function applyServerEditor() {
     const id = state.editor?.id;
     const expireMode = $(".js-server-expire-mode").value;
     const feeMode = $(".js-server-fee-mode").value;
+    let expireDate = "";
+    let amount = "";
+    try {
+      expireDate = readServerExpireDate(expireMode);
+      amount = readServerAmount(feeMode);
+    } catch (err) {
+      text("#editor-subtitle", err.message);
+      showToast(err.message, "warn");
+      return false;
+    }
     ensureSettings();
     state.settings.hosts[id] = {
       alias: $(".js-server-alias").value.trim(),
       note: $(".js-server-note").value.trim(),
       public_note: $(".js-server-public-note").value.trim(),
       spec: $(".js-server-spec").value.trim(),
-      expire: expireMode === "permanent" ? "0000-00-00" : expireMode === "none" ? "" : $(".js-server-expire").value.trim(),
+      expire: expireDate,
       billing: {
-        end_date: expireMode === "permanent" ? "0000-00-00" : expireMode === "none" ? "" : $(".js-server-expire").value.trim(),
+        end_date: expireDate,
         auto_renewal: expireMode === "date" && $(".js-server-auto").checked ? "1" : "0",
         cycle: expireMode === "date" ? $(".js-server-cycle").value : "",
-        amount: feeMode === "free" ? "free" : $(".js-server-amount").value.trim(),
+        amount,
       },
       expire_notify: $(".js-server-notify").checked,
       weight: Number($(".js-server-weight").value || 0),
@@ -1378,6 +1602,7 @@
       }
       return { ...group, servers: [...servers] };
     });
+    return true;
   }
 
   function openServerGroupEditor(id) {
@@ -1619,7 +1844,9 @@
       return;
     }
     if (state.editor.type === "server") {
-      applyServerEditor();
+      if (!applyServerEditor()) {
+        return;
+      }
       closeDialog();
       renderTables();
       await saveSettingsPayload(settingsPayloadFromState(), {

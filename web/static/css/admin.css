@@ -837,6 +837,45 @@ label.is-disabled {
   grid-column: 1 / -1;
 }
 
+.field-hint {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.date-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 6px;
+  align-items: center;
+}
+
+.date-field input {
+  min-width: 0;
+}
+
+.date-picker-button {
+  border-radius: 6px;
+}
+
+.money-field {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) minmax(88px, 0.8fr);
+  gap: 6px;
+  align-items: center;
+}
+
+.money-field.has-custom-currency {
+  grid-template-columns: minmax(92px, 1fr) minmax(88px, 0.8fr) minmax(72px, 0.7fr);
+}
+
+.money-field input,
+.money-field select {
+  min-width: 0;
+}
+
 .check-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1032,6 +1071,14 @@ label.is-disabled {
   .editor-grid,
   .check-grid {
     grid-template-columns: 1fr;
+  }
+
+  .money-field {
+    grid-template-columns: minmax(0, 1fr) minmax(82px, 0.7fr);
+  }
+
+  .money-field.has-custom-currency .js-server-currency-custom {
+    grid-column: 1 / -1;
   }
 
   .section-save-bar {
