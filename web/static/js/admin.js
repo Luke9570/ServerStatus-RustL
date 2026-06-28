@@ -773,12 +773,10 @@
     const edit = actionButton("编辑", "secondary compact-action");
     edit.addEventListener("click", () => openServerEditor(item.id));
     actionWrap.append(edit);
-    if (!online) {
-      const remove = iconButton("删除离线服务器", "trash");
-      remove.classList.add("danger-icon");
-      remove.addEventListener("click", () => deleteServer(item, row));
-      actionWrap.append(remove);
-    }
+    const remove = iconButton(online ? "停止 Agent 或离线后删除" : "删除服务器", "trash");
+    remove.classList.add("danger-icon");
+    remove.addEventListener("click", () => deleteServer(item, row));
+    actionWrap.append(remove);
     actionWrap.append(el("span", "row-message js-row-message"));
     actions.append(actionWrap);
 
@@ -1051,7 +1049,7 @@
   async function deleteServer(item, row) {
     const online = Boolean(item.stat?.online4 || item.stat?.online6);
     if (online) {
-      rowMessage(row, "在线节点不能删除", "warn");
+      rowMessage(row, "请先停止 Agent 或等待节点离线后再删除", "warn");
       return;
     }
     ensureSettings();

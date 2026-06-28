@@ -334,13 +334,14 @@
 
 #ssr-table th:first-child,
 #ssr-table td:first-child {
-  width: 8.75rem !important;
-  min-width: 8.75rem !important;
-  max-width: 12rem;
+  width: clamp(10rem, 16vw, 18rem) !important;
+  min-width: clamp(10rem, 16vw, 18rem) !important;
+  max-width: 18rem;
 }
 
 #ssr-table td:first-child > div {
-  max-width: 11.5rem;
+  width: max-content;
+  max-width: 17.5rem;
   margin-right: 0;
   margin-left: 0;
   padding-right: 8px;
@@ -377,12 +378,12 @@
 
   #ssr-table th:first-child,
   #ssr-table td:first-child {
-    width: 7.5rem !important;
-    min-width: 7.5rem !important;
+    width: clamp(8.75rem, 42vw, 12rem) !important;
+    min-width: clamp(8.75rem, 42vw, 12rem) !important;
   }
 
   #ssr-table td:first-child > div {
-    max-width: 7rem;
+    max-width: 11.5rem;
     padding-left: 4px;
   }
 }
