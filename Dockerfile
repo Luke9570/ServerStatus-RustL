@@ -4,7 +4,7 @@ FROM rust:1-alpine AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache musl-dev linux-headers zlib-dev git cmake make g++
+RUN apk add --no-cache musl-dev linux-headers zlib-dev ca-certificates git cmake make g++
 
 ARG TARGETARCH
 
@@ -42,6 +42,7 @@ RUN --mount=type=cache,id=serverstatus-cargo-registry,target=/usr/local/cargo/re
 FROM scratch AS production
 LABEL description="ServerStatus-RustL telemetry panel"
 
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /app/stat_server /stat_server
 
 WORKDIR /data
