@@ -2018,6 +2018,32 @@
     };
   }
 
+  function barkServerContainsDeviceKey(server) {
+    try {
+      const url = new URL(server);
+      const firstPart = url.pathname
+        .split("/")
+        .map((part) => part.trim())
+        .find(Boolean);
+      return Boolean(firstPart && firstPart.toLowerCase() !== "push");
+    } catch {
+      return false;
+    }
+  }
+
+  function validateBarkSettingsForTest(bark) {
+    if (!bark.enabled) {
+      return "请先勾选启用 Bark";
+    }
+    if (!bark.server) {
+      return "Bark Server 不能为空";
+    }
+    if (!bark.device_key && !barkServerContainsDeviceKey(bark.server)) {
+      return "Bark Device Key 不能为空";
+    }
+    return "";
+  }
+
   function collectAccessSettings() {
     return {
       access_base_url: normalizeBaseUrl($("#access-base-url").value),
@@ -2107,15 +2133,21 @@
     }
   }
 
-  async function testNotification(kind, scope, payload, buttonSelector, messageSelector) {
+  async function testNotification(
+    kind,
+    scope,
+    payload,
+    buttonSelector,
+    messageSelector,
+    successMessage = "测试通知已发送",
+  ) {
     const button = $(buttonSelector);
     setButtonBusy(button, true, "测试中...");
     text(messageSelector, "测试中...");
     try {
       await postNotifyTest(kind, payload);
-      const message = "测试通知已发送";
-      text(messageSelector, message);
-      showToast(message);
+      text(messageSelector, successMessage);
+      showToast(successMessage);
     } catch (err) {
       if (err.authExpired) {
         setView("login");
@@ -2142,12 +2174,20 @@
   }
 
   async function testBarkSettings() {
+    const bark = collectBarkSettings();
+    const validationMessage = validateBarkSettingsForTest(bark);
+    if (validationMessage) {
+      text("#bark-save-message", validationMessage);
+      showToast(validationMessage, "warn");
+      return;
+    }
     await testNotification(
       "bark",
       "bark",
-      { bark: collectBarkSettings() },
+      { bark },
       "#bark-test",
       "#bark-save-message",
+      "Bark 测试请求已发送，请检查手机通知",
     );
   }
 

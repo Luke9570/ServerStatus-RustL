@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use log::warn;
 use minijinja::context;
 use prettytable::Table;
 use prost::Message;
@@ -226,10 +227,11 @@ async fn send_bark_test(config: crate::notifier::bark::Config) -> Response {
         .await
     {
         Ok(resp) => bark_test_response(resp).await,
-        Err(err) => json_error(
-            StatusCode::BAD_GATEWAY,
-            &format!("Bark 测试失败: {}", request_error_detail(&err)),
-        ),
+        Err(err) => {
+            let detail = request_error_detail(&err);
+            warn!("bark test request failed: {detail}");
+            json_error(StatusCode::BAD_GATEWAY, &format!("Bark 测试失败: {detail}"))
+        }
     }
 }
 
@@ -251,6 +253,10 @@ async fn bark_test_response(resp: reqwest::Response) -> Response {
     let body = resp.text().await.unwrap_or_default();
     if !status.is_success() {
         let detail = short_response_body(&body);
+        warn!(
+            "bark test returned unsuccessful status: {status}, detail: {}",
+            if detail.is_empty() { "-" } else { &detail }
+        );
         return if detail.is_empty() {
             json_error(StatusCode::BAD_GATEWAY, &format!("Bark 接口返回 {status}"))
         } else {
@@ -279,6 +285,7 @@ async fn bark_test_response(resp: reqwest::Response) -> Response {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map_or_else(|| short_response_body(body), ToString::to_string);
+    warn!("bark test returned failure payload: {message}");
     json_error(StatusCode::BAD_GATEWAY, &format!("Bark 推送失败: {message}"))
 }
 
