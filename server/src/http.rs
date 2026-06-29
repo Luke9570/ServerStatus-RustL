@@ -282,7 +282,16 @@ async fn bark_test_response(resp: reqwest::Response, device_key: &str) -> Respon
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .map(|value| sanitize_bark_detail(value, device_key));
-        return notify_test_ok_with_message(detail.as_deref().map_or("Bark API 已接受测试请求", |message| message));
+        let message = detail
+            .as_deref()
+            .map_or("Bark API 已接受测试请求，请检查手机通知", |message| {
+                if message.eq_ignore_ascii_case("success") {
+                    "Bark API 返回 success，测试请求已发送，请检查手机通知"
+                } else {
+                    message
+                }
+            });
+        return notify_test_ok_with_message(message);
     }
 
     let message = payload
