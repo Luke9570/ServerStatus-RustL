@@ -247,15 +247,19 @@ impl Config {
             "tgbot": {
                 "enabled": self.tgbot.enabled,
                 "bot_token": "",
+                "bot_token_configured": is_configured_secret(&self.tgbot.bot_token),
                 "chat_id": "",
+                "chat_id_configured": is_configured_secret(&self.tgbot.chat_id),
                 "title": self.tgbot.title,
                 "expire_tpl": self.tgbot.expire_tpl,
                 "health_tpl": self.tgbot.health_tpl,
             },
             "bark": {
                 "enabled": self.bark.enabled,
-                "server": self.bark.server,
+                "server": public_bark_server(&self.bark.server),
                 "device_key": "",
+                "device_key_configured": is_configured_secret(&self.bark.device_key)
+                    || bark_server_contains_key(&self.bark.server),
                 "title": self.bark.title,
                 "group": self.bark.group,
                 "icon": self.bark.icon,
@@ -271,6 +275,44 @@ impl Config {
     // pub fn to_string(&self) -> Result<String> {
     //     serde_json::to_string(&self).map_err(anyhow::Error::new)
     // }
+}
+
+fn is_configured_secret(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && !value.starts_with('<') && !value.ends_with('>')
+}
+
+fn public_bark_server(server: &str) -> String {
+    let server = server.trim().trim_end_matches('/');
+    let Some((scheme, rest)) = server
+        .strip_prefix("https://")
+        .map(|rest| ("https", rest))
+        .or_else(|| server.strip_prefix("http://").map(|rest| ("http", rest)))
+    else {
+        return server.to_string();
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() {
+        server.to_string()
+    } else {
+        format!("{scheme}://{authority}")
+    }
+}
+
+fn bark_server_contains_key(server: &str) -> bool {
+    let server = server.trim().trim_end_matches('/');
+    let Some(rest) = server
+        .strip_prefix("https://")
+        .or_else(|| server.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let Some((_, path)) = rest.split_once('/') else {
+        return false;
+    };
+    path.split('/')
+        .find(|part| !part.trim().is_empty())
+        .is_some_and(|part| !part.eq_ignore_ascii_case("push"))
 }
 
 fn group_to_admin_json(group: &HostGroup) -> Value {

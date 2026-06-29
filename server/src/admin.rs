@@ -170,8 +170,12 @@ pub struct TgbotOverride {
     pub enabled: bool,
     #[serde(default)]
     pub bot_token: String,
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
+    pub bot_token_configured: bool,
     #[serde(default)]
     pub chat_id: String,
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
+    pub chat_id_configured: bool,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -188,6 +192,8 @@ pub struct BarkOverride {
     pub server: String,
     #[serde(default)]
     pub device_key: String,
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
+    pub device_key_configured: bool,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -311,10 +317,13 @@ pub fn public_snapshot() -> AdminData {
         access_key.password.clear();
     }
     if let Some(tgbot) = &mut data.tgbot {
+        tgbot.bot_token_configured = is_configured_secret(&tgbot.bot_token);
+        tgbot.chat_id_configured = is_configured_secret(&tgbot.chat_id);
         tgbot.bot_token.clear();
         tgbot.chat_id.clear();
     }
     if let Some(bark) = &mut data.bark {
+        bark.device_key_configured = is_configured_secret(&bark.device_key);
         bark.device_key.clear();
     }
     data
@@ -532,6 +541,9 @@ pub fn effective_bark_config(base: &notifier::bark::Config) -> notifier::bark::C
 pub fn normalize_bark_override(config: &mut BarkOverride) {
     config.server = config.server.trim().trim_end_matches('/').to_string();
     config.device_key = config.device_key.trim().to_string();
+    if is_secret_mask(&config.device_key) {
+        config.device_key.clear();
+    }
     if let Some((server, device_key)) = split_bark_server_and_key(&config.server) {
         config.server = server;
         if config.device_key.is_empty() {
@@ -736,15 +748,15 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
     data.admin_password_hash.clone_from(&current.admin_password_hash);
     data.admin_session_version = current.admin_session_version;
     if let (Some(next), Some(prev)) = (&mut data.tgbot, &current.tgbot) {
-        if next.bot_token.trim().is_empty() {
+        if next.bot_token.trim().is_empty() || is_secret_mask(&next.bot_token) {
             next.bot_token.clone_from(&prev.bot_token);
         }
-        if next.chat_id.trim().is_empty() {
+        if next.chat_id.trim().is_empty() || is_secret_mask(&next.chat_id) {
             next.chat_id.clone_from(&prev.chat_id);
         }
     }
     if let (Some(next), Some(prev)) = (&mut data.bark, &current.bark) {
-        if next.device_key.trim().is_empty() {
+        if next.device_key.trim().is_empty() || is_secret_mask(&next.device_key) {
             next.device_key.clone_from(&prev.device_key);
         }
     }
@@ -763,6 +775,9 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
 
 fn normalize_admin_data(data: &mut AdminData) {
     normalize_optional_string(&mut data.admin_user);
+    if let Some(tgbot) = &mut data.tgbot {
+        normalize_tgbot_override(tgbot);
+    }
     if let Some(bark) = &mut data.bark {
         normalize_bark_override(bark);
     }
@@ -823,6 +838,27 @@ fn normalize_admin_data(data: &mut AdminData) {
         .retain(|gid, _| !gid.trim().is_empty() && !deleted.contains(gid));
     data.groups
         .retain(|gid, _| !gid.trim().is_empty() && !deleted.contains(gid));
+}
+
+pub(crate) fn normalize_tgbot_override(config: &mut TgbotOverride) {
+    config.bot_token = config.bot_token.trim().to_string();
+    config.chat_id = config.chat_id.trim().to_string();
+    if is_secret_mask(&config.bot_token) {
+        config.bot_token.clear();
+    }
+    if is_secret_mask(&config.chat_id) {
+        config.chat_id.clear();
+    }
+}
+
+fn is_secret_mask(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && value.chars().all(|ch| matches!(ch, '*' | '•' | '●' | '·'))
+}
+
+fn is_configured_secret(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && !value.starts_with('<') && !value.ends_with('>')
 }
 
 fn normalize_server_group(group: &mut ServerGroupOverride) {
@@ -1050,6 +1086,10 @@ fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+fn is_false_bool(value: &bool) -> bool {
+    !*value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1100,6 +1140,43 @@ mod tests {
         assert!(data.hosts.contains_key("kept"));
         assert_eq!(data.server_groups[0].servers, vec!["kept"]);
         assert_eq!(data.alert_rules[0].servers, vec!["kept"]);
+    }
+
+    #[test]
+    fn masked_notification_secrets_keep_existing_values() {
+        let current = AdminData {
+            tgbot: Some(TgbotOverride {
+                bot_token: "old-token".to_string(),
+                chat_id: "old-chat".to_string(),
+                ..Default::default()
+            }),
+            bark: Some(BarkOverride {
+                device_key: "old-device-key".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut next = AdminData {
+            tgbot: Some(TgbotOverride {
+                bot_token: "••••••••••••".to_string(),
+                chat_id: "************".to_string(),
+                ..Default::default()
+            }),
+            bark: Some(BarkOverride {
+                device_key: "••••••••••••".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        merge_sensitive_fields(&mut next, &current);
+        normalize_admin_data(&mut next);
+
+        let tgbot = next.tgbot.unwrap();
+        let bark = next.bark.unwrap();
+        assert_eq!(tgbot.bot_token, "old-token");
+        assert_eq!(tgbot.chat_id, "old-chat");
+        assert_eq!(bark.device_key, "old-device-key");
     }
 
     #[test]

@@ -82,10 +82,10 @@ impl crate::notifier::Notifier for TGBot {
                 .await
             {
                 Ok(resp) => {
-                    info!("tg send msg resp => {resp:?}");
+                    info!("tg send msg status => {}", resp.status());
                 }
                 Err(err) => {
-                    error!("tg send msg error => {err:?}");
+                    error!("tg send msg error => {}", sanitize_tg_error(&err.to_string(), &tg_url));
                 }
             }
         });
@@ -118,4 +118,14 @@ impl crate::notifier::Notifier for TGBot {
             }
         })
     }
+}
+
+fn sanitize_tg_error(message: &str, tg_url: &str) -> String {
+    let mut sanitized = message.replace(tg_url, "https://api.telegram.org/bot[redacted]/sendMessage");
+    if let Some((_, rest)) = tg_url.split_once("/bot") {
+        if let Some((token, _)) = rest.split_once("/sendMessage") {
+            sanitized = sanitized.replace(token, "[redacted]");
+        }
+    }
+    sanitized
 }

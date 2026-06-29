@@ -2,6 +2,7 @@
   const tokenKey = "ssr_admin_token";
   const adminThemeKey = "ssr_admin_theme";
   const homepageThemeKey = "chakra-ui-color-mode";
+  const secretMask = "••••••••••••";
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -207,6 +208,41 @@
     }
     button.disabled = busy;
     button.textContent = busy ? busyText : button.dataset.defaultText;
+  }
+
+  function setSecretInput(selector, configured) {
+    const input = $(selector);
+    if (!input) {
+      return;
+    }
+    input.dataset.secretConfigured = configured ? "1" : "0";
+    input.dataset.secretMasked = configured ? "1" : "0";
+    input.value = configured ? secretMask : "";
+    input.placeholder = configured ? "已配置，输入新值后保存" : "未配置，输入后保存";
+  }
+
+  function secretInputValue(selector) {
+    const input = $(selector);
+    if (!input) {
+      return "";
+    }
+    const value = input.value.trim();
+    if (input.dataset.secretMasked === "1" || value === secretMask) {
+      return "";
+    }
+    return value;
+  }
+
+  function secretConfigured(selector) {
+    const input = $(selector);
+    return input?.dataset.secretConfigured === "1";
+  }
+
+  function restoreSecretInput(input) {
+    if (input.dataset.secretConfigured === "1" && !input.value.trim()) {
+      input.value = secretMask;
+      input.dataset.secretMasked = "1";
+    }
   }
 
   function localButton(scope) {
@@ -1063,8 +1099,8 @@
   function renderTgbotNotification() {
     const tg = state.settings?.tgbot || state.config?.tgbot || {};
     $("#tg-enabled").checked = Boolean(tg.enabled);
-    $("#tg-token").value = "";
-    $("#tg-chat").value = "";
+    setSecretInput("#tg-token", Boolean(tg.bot_token_configured));
+    setSecretInput("#tg-chat", Boolean(tg.chat_id_configured));
     $("#tg-title").value = tg.title || "";
     $("#tg-expire").value = tg.expire_tpl || "";
     $("#tg-health").value = tg.health_tpl || "";
@@ -1075,7 +1111,7 @@
     const bark = state.settings?.bark || state.config?.bark || {};
     $("#bark-enabled").checked = Boolean(bark.enabled);
     $("#bark-server").value = bark.server || "https://api.day.app";
-    $("#bark-key").value = "";
+    setSecretInput("#bark-key", Boolean(bark.device_key_configured));
     $("#bark-title").value = bark.title || "ServerStatus";
     $("#bark-group").value = bark.group || "ServerStatus";
     $("#bark-expire").value = bark.expire_tpl || "";
@@ -1998,8 +2034,8 @@
   function collectTgbotSettings() {
     return {
       enabled: $("#tg-enabled").checked,
-      bot_token: $("#tg-token").value.trim(),
-      chat_id: $("#tg-chat").value.trim(),
+      bot_token: secretInputValue("#tg-token"),
+      chat_id: secretInputValue("#tg-chat"),
       title: $("#tg-title").value,
       expire_tpl: $("#tg-expire").value,
       health_tpl: $("#tg-health").value,
@@ -2010,7 +2046,7 @@
     return {
       enabled: $("#bark-enabled").checked,
       server: $("#bark-server").value.trim(),
-      device_key: $("#bark-key").value.trim(),
+      device_key: secretInputValue("#bark-key"),
       title: $("#bark-title").value,
       group: $("#bark-group").value,
       expire_tpl: $("#bark-expire").value,
@@ -2038,7 +2074,7 @@
     if (!bark.server) {
       return "Bark Server 不能为空";
     }
-    if (!bark.device_key && !barkServerContainsDeviceKey(bark.server)) {
+    if (!bark.device_key && !secretConfigured("#bark-key") && !barkServerContainsDeviceKey(bark.server)) {
       return "Bark Device Key 不能为空";
     }
     return "";
@@ -2404,6 +2440,29 @@
     }
   }
 
+  function handleSecretFocus(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || !target.classList.contains("secret-input")) {
+      return;
+    }
+    if (target.dataset.secretMasked === "1") {
+      target.value = "";
+      target.dataset.secretMasked = "0";
+    }
+  }
+
+  function handleSecretBlur(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || !target.classList.contains("secret-input")) {
+      return;
+    }
+    restoreSecretInput(target);
+    const localBlock = target.closest(".local-save-block");
+    if (localBlock?.dataset.localScope) {
+      refreshLocalDirty(localBlock.dataset.localScope);
+    }
+  }
+
   $("#login-form").addEventListener("submit", login);
   $("#tg-save").addEventListener("click", saveTgbotSettings);
   $("#tg-test").addEventListener("click", testTgbotSettings);
@@ -2439,6 +2498,8 @@
   });
   bindTabs();
   bindDirtyTracking();
+  $("#dashboard").addEventListener("focusin", handleSecretFocus);
+  $("#dashboard").addEventListener("focusout", handleSecretBlur);
   setIconButtonIcon($("#user-menu-toggle"), "用户菜单", "user");
   applyTheme(state.theme);
   updateSaveButton();

@@ -104,7 +104,8 @@ pub async fn test_admin_notification(
     match kind.as_str() {
         "tgbot" | "telegram" | "tg" => {
             let mut config = admin::effective_tgbot_config(&cfg.tgbot);
-            if let Some(override_data) = payload.tgbot {
+            if let Some(mut override_data) = payload.tgbot {
+                admin::normalize_tgbot_override(&mut override_data);
                 config.enabled = override_data.enabled;
                 override_nonempty_string(&mut config.bot_token, override_data.bot_token);
                 override_nonempty_string(&mut config.chat_id, override_data.chat_id);
@@ -152,7 +153,8 @@ async fn send_tgbot_test(config: crate::notifier::tgbot::Config) -> Response {
         return json_error(StatusCode::BAD_REQUEST, "Telegram Bot Token 和 Chat ID 不能为空");
     }
 
-    let tg_url = format!("https://api.telegram.org/bot{}/sendMessage", config.bot_token.trim());
+    let token = config.bot_token.trim().to_string();
+    let tg_url = format!("https://api.telegram.org/bot{token}/sendMessage");
     let mut data = HashMap::new();
     data.insert("chat_id", config.chat_id);
     data.insert(
@@ -176,10 +178,10 @@ async fn send_tgbot_test(config: crate::notifier::tgbot::Config) -> Response {
     {
         Ok(resp) if resp.status().is_success() => notify_test_ok("Telegram"),
         Ok(resp) => json_error(StatusCode::BAD_GATEWAY, &format!("Telegram 接口返回 {}", resp.status())),
-        Err(err) => json_error(
-            StatusCode::BAD_GATEWAY,
-            &format!("Telegram 测试失败: {}", request_error_detail(&err)),
-        ),
+        Err(err) => {
+            let detail = request_error_detail(&err).replace(&token, "[redacted]");
+            json_error(StatusCode::BAD_GATEWAY, &format!("Telegram 测试失败: {detail}"))
+        }
     }
 }
 
