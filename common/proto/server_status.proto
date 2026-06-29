@@ -36,6 +36,7 @@ message SysInfo {
   string cpu_vender_id = 10;
 
   string host_name = 11;
+  string virtualization = 12;
 }
 
 message DiskInfo {

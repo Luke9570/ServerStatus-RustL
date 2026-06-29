@@ -161,7 +161,7 @@ Agent 上报          -> 源站域名/IP -> stat_server
 -w, --weight        排序权重
 ```
 
-位置和显示名可以留空自动识别；类型不会用 CPU 架构自动填充，只有需要显示 kvm/openvz/lxc 等类型时再手动填写。
+位置、显示名和类型可以留空自动识别；类型会优先使用 agent 探测到的虚拟化/容器环境，例如 kvm、openvz、lxc、docker，不会用 CPU 架构 x86_64/aarch64 代替。
 
 ## 到期与告警
 

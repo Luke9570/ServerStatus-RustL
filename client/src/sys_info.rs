@@ -18,6 +18,8 @@ use std::collections::HashSet;
 use std::env::consts::ARCH;
 use std::fmt::Write;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 use std::thread;
@@ -284,6 +286,7 @@ pub fn collect_sys_info(args: &Args) -> SysInfo {
     info_pb.os_family = std::env::consts::FAMILY.to_string();
     info_pb.os_release = System::long_os_version().unwrap_or_default();
     info_pb.kernel_version = System::kernel_version().unwrap_or_default();
+    info_pb.virtualization = detect_virtualization();
 
     // cpu
     let cpus = sys.cpus();
@@ -296,6 +299,103 @@ pub fn collect_sys_info(args: &Args) -> SysInfo {
     info_pb.host_name = System::host_name().unwrap_or_default();
 
     info_pb
+}
+
+fn detect_virtualization() -> String {
+    detect_systemd_virt()
+        .or_else(detect_container_virt)
+        .or_else(detect_dmi_virt)
+        .or_else(detect_hypervisor_type)
+        .unwrap_or_default()
+}
+
+fn detect_systemd_virt() -> Option<String> {
+    let output = Command::new("systemd-detect-virt").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout);
+    normalize_virtualization(value.trim())
+}
+
+fn detect_container_virt() -> Option<String> {
+    if Path::new("/.dockerenv").exists() {
+        return Some("docker".to_string());
+    }
+    if Path::new("/run/.containerenv").exists() {
+        return Some("podman".to_string());
+    }
+    if Path::new("/proc/vz").exists() {
+        return Some("openvz".to_string());
+    }
+    let cgroup = fs::read_to_string("/proc/1/cgroup").ok()?;
+    let cgroup = cgroup.to_lowercase();
+    for (needle, value) in [
+        ("docker", "docker"),
+        ("kubepods", "kubernetes"),
+        ("containerd", "containerd"),
+        ("libpod", "podman"),
+        ("lxc", "lxc"),
+    ] {
+        if cgroup.contains(needle) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn detect_dmi_virt() -> Option<String> {
+    let mut data = String::new();
+    for path in [
+        "/sys/class/dmi/id/product_name",
+        "/sys/class/dmi/id/sys_vendor",
+        "/sys/class/dmi/id/board_vendor",
+        "/sys/class/dmi/id/bios_vendor",
+    ] {
+        if let Ok(value) = fs::read_to_string(path) {
+            data.push_str(&value);
+            data.push('\n');
+        }
+    }
+    let data = data.to_lowercase();
+    for (needle, value) in [
+        ("kvm", "kvm"),
+        ("qemu", "kvm"),
+        ("bochs", "kvm"),
+        ("vmware", "vmware"),
+        ("virtualbox", "virtualbox"),
+        ("oracle", "virtualbox"),
+        ("hyper-v", "hyperv"),
+        ("microsoft corporation", "hyperv"),
+        ("xen", "xen"),
+        ("parallels", "parallels"),
+        ("bhyve", "bhyve"),
+        ("openvz", "openvz"),
+    ] {
+        if data.contains(needle) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn detect_hypervisor_type() -> Option<String> {
+    let value = fs::read_to_string("/sys/hypervisor/type").ok()?;
+    normalize_virtualization(value.trim())
+}
+
+fn normalize_virtualization(value: &str) -> Option<String> {
+    let value = value.trim().to_lowercase();
+    if value.is_empty() || value == "none" {
+        return None;
+    }
+    let normalized = match value.as_str() {
+        "microsoft" => "hyperv",
+        "oracle" => "virtualbox",
+        "wsl" => "wsl",
+        other => other,
+    };
+    Some(normalized.to_string())
 }
 
 pub fn gen_sys_id(sys_info: &SysInfo) -> String {
@@ -387,6 +487,7 @@ pub fn print_sysinfo() {
     system_t.add_row(row!["Distribution ID", System::distribution_id()]);
     system_t.add_row(row!["Host name", System::host_name().unwrap_or_default()]);
     system_t.add_row(row!["CPU arch", ARCH]);
+    system_t.add_row(row!["Virtualization", detect_virtualization()]);
 
     let mut cpu_t = Table::new();
     cpu_t.set_format(*prettytable::format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);

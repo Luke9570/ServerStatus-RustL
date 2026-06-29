@@ -630,6 +630,19 @@ fn fill_auto_location(stat: &mut HostStat) {
             stat.location = location;
         }
     }
+    if stat.host_type.trim().is_empty() {
+        if let Some(host_type) = infer_host_type(stat.sys_info.as_ref()) {
+            stat.host_type = host_type;
+        }
+    }
+}
+
+fn infer_host_type(sys_info: Option<&stat_common::server_status::SysInfo>) -> Option<String> {
+    let virtualization = sys_info?.virtualization.trim().to_lowercase();
+    if virtualization.is_empty() {
+        return None;
+    }
+    Some(virtualization)
 }
 
 fn infer_location_code(ip_info: Option<&stat_common::server_status::IpInfo>) -> Option<String> {
@@ -781,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn fills_empty_location_but_not_type_from_telemetry() {
+    fn fills_empty_location_and_virtualization_type_from_telemetry() {
         let mut stat = HostStat {
             ip_info: Some(IpInfo {
                 country: "United States".to_string(),
@@ -790,12 +803,26 @@ mod tests {
             }),
             sys_info: Some(SysInfo {
                 os_arch: "x86_64".to_string(),
+                virtualization: "kvm".to_string(),
                 ..Default::default()
             }),
             ..Default::default()
         };
         fill_auto_location(&mut stat);
         assert_eq!(stat.location, "us");
+        assert_eq!(stat.host_type, "kvm");
+    }
+
+    #[test]
+    fn does_not_use_arch_as_host_type() {
+        let mut stat = HostStat {
+            sys_info: Some(SysInfo {
+                os_arch: "x86_64".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        fill_auto_location(&mut stat);
         assert_eq!(stat.host_type, "");
     }
 
