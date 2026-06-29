@@ -529,6 +529,34 @@ pub fn effective_bark_config(base: &notifier::bark::Config) -> notifier::bark::C
     cfg
 }
 
+pub fn normalize_bark_override(config: &mut BarkOverride) {
+    config.server = config.server.trim().trim_end_matches('/').to_string();
+    config.device_key = config.device_key.trim().to_string();
+    if let Some((server, device_key)) = split_bark_server_and_key(&config.server) {
+        config.server = server;
+        if config.device_key.is_empty() {
+            config.device_key = device_key;
+        }
+    }
+}
+
+fn split_bark_server_and_key(input: &str) -> Option<(String, String)> {
+    let value = input.trim().trim_end_matches('/');
+    let (scheme, rest) = value
+        .strip_prefix("https://")
+        .map(|rest| ("https", rest))
+        .or_else(|| value.strip_prefix("http://").map(|rest| ("http", rest)))?;
+    let (authority, path) = rest.split_once('/')?;
+    let device_key = path.split('/').find(|part| !part.trim().is_empty())?.trim();
+    if device_key.eq_ignore_ascii_case("push") {
+        return None;
+    }
+    if !authority.eq_ignore_ascii_case("api.day.app") && device_key.chars().count() < 12 {
+        return None;
+    }
+    Some((format!("{scheme}://{authority}"), device_key.to_string()))
+}
+
 impl NodeOverride {
     fn normalize(&mut self) {
         normalize_optional_string(&mut self.alias);
@@ -735,6 +763,9 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
 
 fn normalize_admin_data(data: &mut AdminData) {
     normalize_optional_string(&mut data.admin_user);
+    if let Some(bark) = &mut data.bark {
+        normalize_bark_override(bark);
+    }
     for override_data in data.hosts.values_mut() {
         override_data.normalize();
     }
@@ -1069,5 +1100,31 @@ mod tests {
         assert!(data.hosts.contains_key("kept"));
         assert_eq!(data.server_groups[0].servers, vec!["kept"]);
         assert_eq!(data.alert_rules[0].servers, vec!["kept"]);
+    }
+
+    #[test]
+    fn bark_full_api_url_is_split_into_server_and_device_key() {
+        let mut config = BarkOverride {
+            server: "https://api.day.app/example-device-key".to_string(),
+            ..Default::default()
+        };
+
+        normalize_bark_override(&mut config);
+
+        assert_eq!(config.server, "https://api.day.app");
+        assert_eq!(config.device_key, "example-device-key");
+    }
+
+    #[test]
+    fn bark_push_endpoint_is_kept_as_server_url() {
+        let mut config = BarkOverride {
+            server: "https://api.day.app/push".to_string(),
+            ..Default::default()
+        };
+
+        normalize_bark_override(&mut config);
+
+        assert_eq!(config.server, "https://api.day.app/push");
+        assert!(config.device_key.is_empty());
     }
 }

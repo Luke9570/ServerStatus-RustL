@@ -115,7 +115,8 @@ pub async fn test_admin_notification(
         }
         "bark" => {
             let mut config = admin::effective_bark_config(&cfg.bark);
-            if let Some(override_data) = payload.bark {
+            if let Some(mut override_data) = payload.bark {
+                admin::normalize_bark_override(&mut override_data);
                 config.enabled = override_data.enabled;
                 override_nonempty_string(&mut config.server, override_data.server);
                 override_nonempty_string(&mut config.device_key, override_data.device_key);
@@ -173,10 +174,7 @@ async fn send_tgbot_test(config: crate::notifier::tgbot::Config) -> Response {
         .await
     {
         Ok(resp) if resp.status().is_success() => notify_test_ok("Telegram"),
-        Ok(resp) => json_error(
-            StatusCode::BAD_GATEWAY,
-            &format!("Telegram 接口返回 {}", resp.status()),
-        ),
+        Ok(resp) => json_error(StatusCode::BAD_GATEWAY, &format!("Telegram 接口返回 {}", resp.status())),
         Err(err) => json_error(
             StatusCode::BAD_GATEWAY,
             &format!("Telegram 测试失败: {}", request_error_detail(&err)),
@@ -285,11 +283,8 @@ async fn bark_test_response(resp: reqwest::Response) -> Response {
 }
 
 fn bark_success_code(code: &Value) -> bool {
-    code.as_i64()
-        .is_some_and(|value| value == 0 || value == 200)
-        || code
-            .as_str()
-            .is_some_and(|value| value == "0" || value == "200")
+    code.as_i64().is_some_and(|value| value == 0 || value == 200)
+        || code.as_str().is_some_and(|value| value == "0" || value == "200")
 }
 
 fn short_response_body(body: &str) -> String {
