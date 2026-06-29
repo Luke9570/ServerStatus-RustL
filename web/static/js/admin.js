@@ -22,6 +22,12 @@
       access: false,
       expire: false,
     },
+    localBaseline: {
+      tg: "",
+      bark: "",
+      access: "",
+      expire: "",
+    },
   };
 
   const pageMeta = {
@@ -232,6 +238,42 @@
     updateLocalSaveButton(scope);
   }
 
+  function stableJson(value) {
+    return JSON.stringify(value);
+  }
+
+  function localSnapshot(scope) {
+    if (scope === "tg") {
+      return stableJson(collectTgbotSettings());
+    }
+    if (scope === "bark") {
+      return stableJson(collectBarkSettings());
+    }
+    if (scope === "access") {
+      return stableJson(collectAccessSettings());
+    }
+    if (scope === "expire") {
+      return stableJson(collectExpireNotifySettings());
+    }
+    return "";
+  }
+
+  function resetLocalBaseline(scope, message = "") {
+    if (!(scope in state.localBaseline)) {
+      return;
+    }
+    state.localBaseline[scope] = localSnapshot(scope);
+    setLocalDirty(scope, false, message);
+  }
+
+  function refreshLocalDirty(scope) {
+    if (!(scope in state.localBaseline)) {
+      return;
+    }
+    const dirty = localSnapshot(scope) !== state.localBaseline[scope];
+    setLocalDirty(scope, dirty, dirty ? "有未保存更改" : "");
+  }
+
   function hasUnsavedChanges() {
     return state.dirty || Object.values(state.localDirty).some(Boolean);
   }
@@ -258,6 +300,15 @@
 
   async function postSettings(payload) {
     const response = await fetch("/api/admin/settings", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify(payload),
+    });
+    return readJson(response);
+  }
+
+  async function postNotifyTest(kind, payload) {
+    const response = await fetch(`/api/admin/notify-test/${encodeURIComponent(kind)}`, {
       method: "POST",
       headers: authHeaders(true),
       body: JSON.stringify(payload),
@@ -1005,6 +1056,11 @@
   }
 
   function renderNotifications() {
+    renderTgbotNotification();
+    renderBarkNotification();
+  }
+
+  function renderTgbotNotification() {
     const tg = state.settings?.tgbot || state.config?.tgbot || {};
     $("#tg-enabled").checked = Boolean(tg.enabled);
     $("#tg-token").value = "";
@@ -1012,7 +1068,10 @@
     $("#tg-title").value = tg.title || "";
     $("#tg-expire").value = tg.expire_tpl || "";
     $("#tg-health").value = tg.health_tpl || "";
+    resetLocalBaseline("tg", "");
+  }
 
+  function renderBarkNotification() {
     const bark = state.settings?.bark || state.config?.bark || {};
     $("#bark-enabled").checked = Boolean(bark.enabled);
     $("#bark-server").value = bark.server || "https://api.day.app";
@@ -1021,8 +1080,7 @@
     $("#bark-group").value = bark.group || "ServerStatus";
     $("#bark-expire").value = bark.expire_tpl || "";
     $("#bark-health").value = bark.health_tpl || "";
-    setLocalDirty("tg", false, "");
-    setLocalDirty("bark", false, "");
+    resetLocalBaseline("bark", "");
   }
 
   function renderSettings() {
@@ -1035,8 +1093,8 @@
     $("#admin-username").value = state.config?.admin?.username || $("#username").value.trim() || "admin";
     text("#topbar-user", $("#admin-username").value || "admin");
     renderDeletedHosts();
-    setLocalDirty("access", false, "");
-    setLocalDirty("expire", false, "");
+    resetLocalBaseline("access", "");
+    resetLocalBaseline("expire", "");
   }
 
   function renderDeletedHosts() {
@@ -2028,7 +2086,8 @@
       busyButton: $("#tg-save"),
     });
     if (ok) {
-      setLocalDirty("tg", false, "Telegram 已同步到后端");
+      renderTgbotNotification();
+      resetLocalBaseline("tg", "Telegram 已同步到后端");
       renderAlertRules();
     }
   }
@@ -2042,9 +2101,54 @@
       busyButton: $("#bark-save"),
     });
     if (ok) {
-      setLocalDirty("bark", false, "Bark 已同步到后端");
+      renderBarkNotification();
+      resetLocalBaseline("bark", "Bark 已同步到后端");
       renderAlertRules();
     }
+  }
+
+  async function testNotification(kind, scope, payload, buttonSelector, messageSelector) {
+    const button = $(buttonSelector);
+    setButtonBusy(button, true, "测试中...");
+    text(messageSelector, "测试中...");
+    try {
+      await postNotifyTest(kind, payload);
+      const message = "测试通知已发送";
+      text(messageSelector, message);
+      showToast(message);
+    } catch (err) {
+      if (err.authExpired) {
+        setView("login");
+        text("#login-message", "登录已过期，请重新登录");
+      }
+      const message = `测试失败: ${err.message}`;
+      text(messageSelector, message);
+      showToast(message, "warn");
+    } finally {
+      setButtonBusy(button, false, "测试中...");
+      state.localDirty[scope] = localSnapshot(scope) !== state.localBaseline[scope];
+      updateLocalSaveButton(scope);
+    }
+  }
+
+  async function testTgbotSettings() {
+    await testNotification(
+      "tgbot",
+      "tg",
+      { tgbot: collectTgbotSettings() },
+      "#tg-test",
+      "#tg-save-message",
+    );
+  }
+
+  async function testBarkSettings() {
+    await testNotification(
+      "bark",
+      "bark",
+      { bark: collectBarkSettings() },
+      "#bark-test",
+      "#bark-save-message",
+    );
   }
 
   async function saveAccessSettings() {
@@ -2058,7 +2162,7 @@
     if (ok) {
       $("#access-base-url").value = access.access_base_url;
       $("#agent-base-url").value = access.agent_base_url;
-      setLocalDirty("access", false, "接入地址已同步到后端");
+      resetLocalBaseline("access", "接入地址已同步到后端");
     }
   }
 
@@ -2071,7 +2175,7 @@
       busyButton: $("#expire-save"),
     });
     if (ok) {
-      setLocalDirty("expire", false, "到期提醒已同步到后端");
+      resetLocalBaseline("expire", "到期提醒已同步到后端");
     }
   }
 
@@ -2255,13 +2359,15 @@
     }
     const localBlock = target.closest(".local-save-block");
     if (localBlock?.dataset.localScope) {
-      setLocalDirty(localBlock.dataset.localScope, true, "有未保存更改");
+      refreshLocalDirty(localBlock.dataset.localScope);
     }
   }
 
   $("#login-form").addEventListener("submit", login);
   $("#tg-save").addEventListener("click", saveTgbotSettings);
+  $("#tg-test").addEventListener("click", testTgbotSettings);
   $("#bark-save").addEventListener("click", saveBarkSettings);
+  $("#bark-test").addEventListener("click", testBarkSettings);
   $("#access-save").addEventListener("click", saveAccessSettings);
   $("#expire-save").addEventListener("click", saveExpireNotifySettings);
   $("#password-form").addEventListener("submit", changeAdminPassword);

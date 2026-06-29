@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write as _;
+use tokio::time::Duration;
 
 use stat_common::{server_status::StatRequest, utils::bytes2human};
 
@@ -82,6 +83,169 @@ pub async fn save_admin_settings(_claims: jwt::Claims, Json(payload): Json<admin
         )
             .into_response(),
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct NotifyTestPayload {
+    #[serde(default)]
+    tgbot: Option<admin::TgbotOverride>,
+    #[serde(default)]
+    bark: Option<admin::BarkOverride>,
+}
+
+pub async fn test_admin_notification(
+    _claims: jwt::Claims,
+    Path(kind): Path<String>,
+    Json(payload): Json<NotifyTestPayload>,
+) -> impl IntoResponse {
+    let cfg = G_CONFIG.get().unwrap();
+    match kind.as_str() {
+        "tgbot" | "telegram" | "tg" => {
+            let mut config = admin::effective_tgbot_config(&cfg.tgbot);
+            if let Some(override_data) = payload.tgbot {
+                config.enabled = override_data.enabled;
+                override_nonempty_string(&mut config.bot_token, override_data.bot_token);
+                override_nonempty_string(&mut config.chat_id, override_data.chat_id);
+                override_nonempty_string(&mut config.title, override_data.title);
+                override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
+                override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
+            }
+            send_tgbot_test(config).await
+        }
+        "bark" => {
+            let mut config = admin::effective_bark_config(&cfg.bark);
+            if let Some(override_data) = payload.bark {
+                config.enabled = override_data.enabled;
+                override_nonempty_string(&mut config.server, override_data.server);
+                override_nonempty_string(&mut config.device_key, override_data.device_key);
+                override_nonempty_string(&mut config.title, override_data.title);
+                override_nonempty_string(&mut config.group, override_data.group);
+                override_nonempty_string(&mut config.icon, override_data.icon);
+                override_nonempty_string(&mut config.sound, override_data.sound);
+                override_nonempty_string(&mut config.url, override_data.url);
+                override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
+                override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
+                if let Some(timeout) = override_data.timeout {
+                    config.timeout = timeout;
+                }
+            }
+            send_bark_test(config).await
+        }
+        _ => json_error(StatusCode::NOT_FOUND, "不支持的通知方式"),
+    }
+}
+
+fn override_nonempty_string(target: &mut String, value: String) {
+    if !value.trim().is_empty() {
+        *target = value;
+    }
+}
+
+async fn send_tgbot_test(config: crate::notifier::tgbot::Config) -> Response {
+    if !config.enabled {
+        return json_error(StatusCode::BAD_REQUEST, "请先启用 Telegram");
+    }
+    if config.bot_token.trim().is_empty() || config.chat_id.trim().is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "Telegram Bot Token 和 Chat ID 不能为空");
+    }
+
+    let tg_url = format!("https://api.telegram.org/bot{}/sendMessage", config.bot_token.trim());
+    let mut data = HashMap::new();
+    data.insert("chat_id", config.chat_id);
+    data.insert(
+        "text",
+        format!(
+            "{}\nServerStatus 后台通知测试已发送",
+            if config.title.trim().is_empty() {
+                "ServerStatus"
+            } else {
+                config.title.trim()
+            }
+        ),
+    );
+
+    match reqwest::Client::new()
+        .post(tg_url)
+        .timeout(Duration::from_secs(10))
+        .json(&data)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => notify_test_ok("Telegram"),
+        Ok(resp) => json_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("Telegram 接口返回 {}", resp.status()),
+        ),
+        Err(err) => json_error(StatusCode::BAD_GATEWAY, &format!("Telegram 测试失败: {err}")),
+    }
+}
+
+async fn send_bark_test(config: crate::notifier::bark::Config) -> Response {
+    if !config.enabled {
+        return json_error(StatusCode::BAD_REQUEST, "请先启用 Bark");
+    }
+    if config.device_key.trim().is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "Bark Device Key 不能为空");
+    }
+
+    let server = config.server.trim_end_matches('/');
+    let push_url = if server.ends_with("/push") {
+        server.to_string()
+    } else {
+        format!("{server}/push")
+    };
+    let mut data = HashMap::new();
+    data.insert("device_key".to_string(), config.device_key);
+    data.insert(
+        "title".to_string(),
+        if config.title.trim().is_empty() {
+            "ServerStatus".to_string()
+        } else {
+            config.title
+        },
+    );
+    data.insert("body".to_string(), "ServerStatus 后台通知测试已发送".to_string());
+    for (key, value) in [
+        ("group", config.group),
+        ("icon", config.icon),
+        ("sound", config.sound),
+        ("url", config.url),
+    ] {
+        if !value.trim().is_empty() {
+            data.insert(key.to_string(), value);
+        }
+    }
+
+    match reqwest::Client::new()
+        .post(push_url)
+        .timeout(Duration::from_secs(config.timeout.max(1)))
+        .json(&data)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => notify_test_ok("Bark"),
+        Ok(resp) => json_error(StatusCode::BAD_GATEWAY, &format!("Bark 接口返回 {}", resp.status())),
+        Err(err) => json_error(StatusCode::BAD_GATEWAY, &format!("Bark 测试失败: {err}")),
+    }
+}
+
+fn notify_test_ok(kind: &str) -> Response {
+    Json(json!({
+        "code": 0,
+        "message": format!("{kind} test sent"),
+    }))
+    .into_response()
+}
+
+fn json_error(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        Json(json!({
+            "code": 1,
+            "message": message,
+        })),
+    )
+        .into_response()
 }
 
 pub async fn purge_deleted_host(_claims: jwt::Claims, Path(name): Path<String>) -> impl IntoResponse {

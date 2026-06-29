@@ -453,6 +453,11 @@ label {
   min-width: 0;
 }
 
+.block-head-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+
 .block-head-actions .block-message {
   max-width: 160px;
   overflow: hidden;

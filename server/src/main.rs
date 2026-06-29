@@ -66,6 +66,7 @@ fn create_app_router() -> Router {
             "/api/admin/settings",
             get(http::admin_settings).post(http::save_admin_settings),
         )
+        .route("/api/admin/notify-test/{kind}", post(http::test_admin_notification))
         .route("/api/admin/password", post(http::change_admin_password))
         .route("/api/admin/deleted-hosts", delete(http::clear_deleted_hosts))
         .route("/api/admin/deleted-hosts/{name}", delete(http::purge_deleted_host))

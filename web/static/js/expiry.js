@@ -224,7 +224,6 @@
       expire.date || expire.raw,
       expire.label,
       renewalText(expire),
-      expire.source ? `source: ${expire.source}` : "",
     ]
       .filter(Boolean)
       .join(" | ");
@@ -456,7 +455,6 @@
       expire.original_date && expire.original_date !== expire.date ? `原始: ${expire.original_date}` : "",
       renewalText(expire),
       expire.amount ? `金额: ${expire.amount}` : "",
-      expire.source ? `来源: ${expire.source}` : "",
     ].filter(Boolean);
 
     wrap.textContent = parts.join(" | ");
