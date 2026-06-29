@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::error::Error as _;
 use std::fmt::Write as _;
 use tokio::time::Duration;
 
@@ -176,7 +177,10 @@ async fn send_tgbot_test(config: crate::notifier::tgbot::Config) -> Response {
             StatusCode::BAD_GATEWAY,
             &format!("Telegram 接口返回 {}", resp.status()),
         ),
-        Err(err) => json_error(StatusCode::BAD_GATEWAY, &format!("Telegram 测试失败: {err}")),
+        Err(err) => json_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("Telegram 测试失败: {}", request_error_detail(&err)),
+        ),
     }
 }
 
@@ -223,9 +227,77 @@ async fn send_bark_test(config: crate::notifier::bark::Config) -> Response {
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => notify_test_ok("Bark"),
-        Ok(resp) => json_error(StatusCode::BAD_GATEWAY, &format!("Bark 接口返回 {}", resp.status())),
-        Err(err) => json_error(StatusCode::BAD_GATEWAY, &format!("Bark 测试失败: {err}")),
+        Ok(resp) => bark_test_response(resp).await,
+        Err(err) => json_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("Bark 测试失败: {}", request_error_detail(&err)),
+        ),
+    }
+}
+
+fn request_error_detail(err: &reqwest::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(err) = source {
+        let detail = err.to_string();
+        if !parts.iter().any(|part| part == &detail) {
+            parts.push(detail);
+        }
+        source = err.source();
+    }
+    parts.join(": ")
+}
+
+async fn bark_test_response(resp: reqwest::Response) -> Response {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let detail = short_response_body(&body);
+        return if detail.is_empty() {
+            json_error(StatusCode::BAD_GATEWAY, &format!("Bark 接口返回 {status}"))
+        } else {
+            json_error(StatusCode::BAD_GATEWAY, &format!("Bark 接口返回 {status}: {detail}"))
+        };
+    }
+
+    let body = body.trim();
+    if body.is_empty() {
+        return notify_test_ok("Bark");
+    }
+
+    let Ok(payload) = serde_json::from_str::<Value>(body) else {
+        return notify_test_ok("Bark");
+    };
+    let Some(code) = payload.get("code") else {
+        return notify_test_ok("Bark");
+    };
+    if bark_success_code(code) {
+        return notify_test_ok("Bark");
+    }
+
+    let message = payload
+        .get("message")
+        .or_else(|| payload.get("error"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map_or_else(|| short_response_body(body), ToString::to_string);
+    json_error(StatusCode::BAD_GATEWAY, &format!("Bark 推送失败: {message}"))
+}
+
+fn bark_success_code(code: &Value) -> bool {
+    code.as_i64()
+        .is_some_and(|value| value == 0 || value == 200)
+        || code
+            .as_str()
+            .is_some_and(|value| value == "0" || value == "200")
+}
+
+fn short_response_body(body: &str) -> String {
+    let body = body.trim();
+    if body.chars().count() <= 180 {
+        body.to_string()
+    } else {
+        format!("{}...", body.chars().take(180).collect::<String>())
     }
 }
 
