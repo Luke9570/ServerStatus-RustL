@@ -197,8 +197,9 @@ async fn send_bark_test(config: crate::notifier::bark::Config) -> Response {
     } else {
         format!("{server}/push")
     };
+    let device_key = config.device_key.trim().to_string();
     let mut data = HashMap::new();
-    data.insert("device_key".to_string(), config.device_key);
+    data.insert("device_key".to_string(), device_key.clone());
     data.insert(
         "title".to_string(),
         if config.title.trim().is_empty() {
@@ -226,7 +227,7 @@ async fn send_bark_test(config: crate::notifier::bark::Config) -> Response {
         .send()
         .await
     {
-        Ok(resp) => bark_test_response(resp).await,
+        Ok(resp) => bark_test_response(resp, &device_key).await,
         Err(err) => {
             let detail = request_error_detail(&err);
             warn!("bark test request failed: {detail}");
@@ -248,11 +249,11 @@ fn request_error_detail(err: &reqwest::Error) -> String {
     parts.join(": ")
 }
 
-async fn bark_test_response(resp: reqwest::Response) -> Response {
+async fn bark_test_response(resp: reqwest::Response, device_key: &str) -> Response {
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        let detail = short_response_body(&body);
+        let detail = sanitize_bark_detail(&short_response_body(&body), device_key);
         warn!(
             "bark test returned unsuccessful status: {status}, detail: {}",
             if detail.is_empty() { "-" } else { &detail }
@@ -276,7 +277,12 @@ async fn bark_test_response(resp: reqwest::Response) -> Response {
         return notify_test_ok("Bark");
     };
     if bark_success_code(code) {
-        return notify_test_ok("Bark");
+        let detail = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| sanitize_bark_detail(value, device_key));
+        return notify_test_ok_with_message(detail.as_deref().map_or("Bark API 已接受测试请求", |message| message));
     }
 
     let message = payload
@@ -285,6 +291,7 @@ async fn bark_test_response(resp: reqwest::Response) -> Response {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map_or_else(|| short_response_body(body), ToString::to_string);
+    let message = sanitize_bark_detail(&message, device_key);
     warn!("bark test returned failure payload: {message}");
     json_error(StatusCode::BAD_GATEWAY, &format!("Bark 推送失败: {message}"))
 }
@@ -303,10 +310,23 @@ fn short_response_body(body: &str) -> String {
     }
 }
 
+fn sanitize_bark_detail(detail: &str, device_key: &str) -> String {
+    let device_key = device_key.trim();
+    if device_key.is_empty() {
+        detail.to_string()
+    } else {
+        detail.replace(device_key, "[redacted]")
+    }
+}
+
 fn notify_test_ok(kind: &str) -> Response {
+    notify_test_ok_with_message(&format!("{kind} test sent"))
+}
+
+fn notify_test_ok_with_message(message: &str) -> Response {
     Json(json!({
         "code": 0,
-        "message": format!("{kind} test sent"),
+        "message": message,
     }))
     .into_response()
 }

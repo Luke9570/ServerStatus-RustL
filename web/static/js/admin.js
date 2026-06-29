@@ -2145,9 +2145,10 @@
     setButtonBusy(button, true, "测试中...");
     text(messageSelector, "测试中...");
     try {
-      await postNotifyTest(kind, payload);
-      text(messageSelector, successMessage);
-      showToast(successMessage);
+      const responsePayload = await postNotifyTest(kind, payload);
+      const message = responsePayload.message || successMessage;
+      text(messageSelector, message);
+      showToast(message);
     } catch (err) {
       if (err.authExpired) {
         setView("login");
