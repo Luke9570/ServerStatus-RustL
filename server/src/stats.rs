@@ -265,7 +265,7 @@ impl StatsMgr {
                                     notify_up = true;
                                 }
                             }
-                            fill_auto_location_type(&mut stat_t);
+                            fill_auto_location(&mut stat_t);
                             info!("update stat `{stat_t:?}");
                             let arc_stat = Arc::new(stat.into_owned());
                             if notify_up {
@@ -624,31 +624,12 @@ fn stat_with_custom(stat: &HostStat, custom: String) -> Arc<HostStat> {
     Arc::new(stat)
 }
 
-fn fill_auto_location_type(stat: &mut HostStat) {
+fn fill_auto_location(stat: &mut HostStat) {
     if stat.location.trim().is_empty() {
         if let Some(location) = infer_location_code(stat.ip_info.as_ref()) {
             stat.location = location;
         }
     }
-    if stat.host_type.trim().is_empty() {
-        if let Some(host_type) = infer_host_type(stat.sys_info.as_ref()) {
-            stat.host_type = host_type;
-        }
-    }
-}
-
-fn infer_host_type(sys_info: Option<&stat_common::server_status::SysInfo>) -> Option<String> {
-    let arch = sys_info?.os_arch.trim().to_lowercase();
-    if arch.is_empty() {
-        return None;
-    }
-    let normalized = match arch.as_str() {
-        "amd64" => "x86_64",
-        "x64" => "x86_64",
-        "arm64" => "aarch64",
-        _ => arch.as_str(),
-    };
-    Some(normalized.to_string())
 }
 
 fn infer_location_code(ip_info: Option<&stat_common::server_status::IpInfo>) -> Option<String> {
@@ -800,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn fills_empty_location_and_type_from_telemetry() {
+    fn fills_empty_location_but_not_type_from_telemetry() {
         let mut stat = HostStat {
             ip_info: Some(IpInfo {
                 country: "United States".to_string(),
@@ -813,9 +794,9 @@ mod tests {
             }),
             ..Default::default()
         };
-        fill_auto_location_type(&mut stat);
+        fill_auto_location(&mut stat);
         assert_eq!(stat.location, "us");
-        assert_eq!(stat.host_type, "x86_64");
+        assert_eq!(stat.host_type, "");
     }
 
     #[test]
@@ -833,7 +814,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        fill_auto_location_type(&mut stat);
+        fill_auto_location(&mut stat);
         assert_eq!(stat.location, "jp");
         assert_eq!(stat.host_type, "kvm");
     }

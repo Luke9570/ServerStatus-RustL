@@ -157,11 +157,11 @@ Agent 上报          -> 源站域名/IP -> stat_server
 --disable-extra     不上报系统信息和 IP 信息
 --vnstat            使用 vnstat 统计流量
 --location          手动指定位置
---type              手动指定类型/架构
+--type              手动指定主机类型，例如 kvm、openvz、lxc
 -w, --weight        排序权重
 ```
 
-位置、类型和显示名建议留空自动识别；只有需要覆盖时再手动填写。
+位置和显示名可以留空自动识别；类型不会用 CPU 架构自动填充，只有需要显示 kvm/openvz/lxc 等类型时再手动填写。
 
 ## 到期与告警
 

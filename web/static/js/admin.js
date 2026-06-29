@@ -1216,7 +1216,7 @@
     locationCell.append(locationInput);
     const typeCell = document.createElement("td");
     const typeInput = input("js-access-type", item.type || "");
-    typeInput.placeholder = "留空自动识别";
+    typeInput.placeholder = "例：kvm / openvz";
     typeCell.append(typeInput);
     const labelsCell = document.createElement("td");
     labelsCell.append(input("js-access-labels", item.labels || ""));
@@ -1351,7 +1351,7 @@
     const location = input("js-command-location", "");
     location.placeholder = "留空自动识别";
     const type = input("js-command-type", "");
-    type.placeholder = "留空自动识别";
+    type.placeholder = "留空不设置，例：kvm";
     const weight = input("js-command-weight", "10000", "number");
     weight.min = "1";
     const grid = el("div", "editor-grid");
