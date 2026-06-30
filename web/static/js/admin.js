@@ -677,10 +677,6 @@
     showToast(`已切换为${themeLabel(state.theme)}`);
   }
 
-  function goFrontPage() {
-    window.location.href = "/";
-  }
-
   function actionButton(label, className = "secondary", iconName = "") {
     const button = document.createElement("button");
     button.type = "button";
@@ -2637,7 +2633,6 @@
   $("#access-save").addEventListener("click", saveAccessSettings);
   $("#expire-save").addEventListener("click", saveExpireNotifySettings);
   $("#password-form").addEventListener("submit", changeAdminPassword);
-  $("#front-page-link").addEventListener("click", goFrontPage);
   $("#theme-toggle").addEventListener("click", cycleTheme);
   $("#user-menu-toggle").addEventListener("click", toggleUserMenu);
   $("#logout").addEventListener("click", logout);

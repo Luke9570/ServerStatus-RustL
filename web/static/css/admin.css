@@ -517,11 +517,35 @@ tbody tr:hover {
   background: var(--panel-hover);
 }
 
+#server-rows td {
+  height: 58px;
+}
+
+#server-rows td > .node-name,
+#server-rows td > .stack,
+#server-rows td > .pill,
+#server-rows td > .status-pill,
+#server-rows td > .tag-list,
+#server-rows td > .row-actions,
+#server-rows td > .muted {
+  min-height: 38px;
+}
+
+#server-rows td > .pill,
+#server-rows td > .status-pill,
+#server-rows td > .tag-list,
+#server-rows td > .row-actions,
+#server-rows td > .muted {
+  display: flex;
+  align-items: center;
+}
+
 .node-name,
 .stack {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   gap: 3px;
-  align-content: center;
   min-height: 30px;
 }
 
@@ -593,6 +617,7 @@ tbody tr:hover {
   border-radius: 999px;
   background: var(--panel-solid);
   color: var(--muted);
+  text-decoration: none;
 }
 
 .icon-button svg,
@@ -633,6 +658,26 @@ button.has-icon {
 .theme-toggle,
 .user-button {
   color: var(--accent);
+}
+
+.front-page-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+:root.dark .front-page-button {
+  color: #052e16;
+}
+
+.front-page-button:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: #ffffff;
+}
+
+:root.dark .front-page-button:hover {
+  color: #052e16;
 }
 
 .user-menu {
