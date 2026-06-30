@@ -596,6 +596,7 @@
       sun: ["M12 4V2", "M12 22v-2", "M4.93 4.93 3.52 3.52", "M20.48 20.48l-1.41-1.41", "M4 12H2", "M22 12h-2", "M4.93 19.07l-1.41 1.41", "M20.48 3.52l-1.41 1.41", "M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"],
       moon: ["M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"],
       monitor: ["M4 5h16v11H4Z", "M9 21h6", "M12 16v5"],
+      home: ["M3 11.5 12 4l9 7.5", "M5 10v10h14V10", "M9 20v-6h6v6"],
       user: ["M20 21a8 8 0 0 0-16 0", "M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"],
       "log-out": ["M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4", "M16 17l5-5-5-5", "M21 12H9"],
       calendar: [
@@ -674,6 +675,10 @@
     const index = modes.indexOf(state.theme);
     applyTheme(modes[(index + 1) % modes.length]);
     showToast(`已切换为${themeLabel(state.theme)}`);
+  }
+
+  function goFrontPage() {
+    window.location.href = "/";
   }
 
   function actionButton(label, className = "secondary", iconName = "") {
@@ -2632,6 +2637,7 @@
   $("#access-save").addEventListener("click", saveAccessSettings);
   $("#expire-save").addEventListener("click", saveExpireNotifySettings);
   $("#password-form").addEventListener("submit", changeAdminPassword);
+  $("#front-page-link").addEventListener("click", goFrontPage);
   $("#theme-toggle").addEventListener("click", cycleTheme);
   $("#user-menu-toggle").addEventListener("click", toggleUserMenu);
   $("#logout").addEventListener("click", logout);
@@ -2661,6 +2667,7 @@
   bindDirtyTracking();
   $("#dashboard").addEventListener("focusin", handleSecretFocus);
   $("#dashboard").addEventListener("focusout", handleSecretBlur);
+  setIconButtonIcon($("#front-page-link"), "返回前台", "home");
   setIconButtonIcon($("#user-menu-toggle"), "用户菜单", "user");
   setIconButtonIcon($("#tg-token-clear"), "清空 Bot Token", "trash");
   setIconButtonIcon($("#tg-chat-clear"), "清空 Chat ID", "trash");

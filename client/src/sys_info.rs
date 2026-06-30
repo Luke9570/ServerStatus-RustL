@@ -390,6 +390,8 @@ fn normalize_virtualization(value: &str) -> Option<String> {
         return None;
     }
     let normalized = match value.as_str() {
+        "x86_64" | "x86-64" | "amd64" | "aarch64" | "arm64" | "armv7" | "armv6" => return None,
+        "qemu" | "bochs" => "kvm",
         "microsoft" => "hyperv",
         "oracle" => "virtualbox",
         "wsl" => "wsl",
@@ -681,5 +683,18 @@ mod tests {
         let (total, used) = calc_hdd_stats(&disks, false, false);
         assert_eq!(total, 1024);
         assert_eq!(used, 512);
+    }
+
+    #[test]
+    fn normalizes_qemu_to_kvm_for_panel_type() {
+        assert_eq!(normalize_virtualization("qemu"), Some("kvm".to_string()));
+        assert_eq!(normalize_virtualization("QEMU"), Some("kvm".to_string()));
+    }
+
+    #[test]
+    fn rejects_cpu_arch_values_as_virtualization_type() {
+        assert_eq!(normalize_virtualization("x86_64"), None);
+        assert_eq!(normalize_virtualization("aarch64"), None);
+        assert_eq!(normalize_virtualization("arm64"), None);
     }
 }

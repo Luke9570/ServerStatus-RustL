@@ -498,7 +498,7 @@ td {
   padding: 10px 11px;
   border-bottom: 1px solid var(--line);
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 th {
@@ -521,6 +521,8 @@ tbody tr:hover {
 .stack {
   display: grid;
   gap: 3px;
+  align-content: center;
+  min-height: 30px;
 }
 
 .node-name strong,
@@ -540,6 +542,7 @@ tbody tr:hover {
 .tag {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: 24px;
   max-width: 260px;
   padding: 2px 8px;
@@ -548,6 +551,7 @@ tbody tr:hover {
   color: var(--text);
   font-size: 12px;
   line-height: 1.25;
+  text-align: center;
   white-space: nowrap;
 }
 
@@ -564,6 +568,7 @@ tbody tr:hover {
 .tag-list {
   display: flex;
   gap: 5px;
+  align-items: center;
   flex-wrap: wrap;
 }
 
@@ -624,6 +629,7 @@ button.has-icon {
   background: var(--accent-soft);
 }
 
+.front-page-button,
 .theme-toggle,
 .user-button {
   color: var(--accent);
