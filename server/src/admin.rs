@@ -170,10 +170,14 @@ pub struct TgbotOverride {
     pub enabled: bool,
     #[serde(default)]
     pub bot_token: String,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub clear_bot_token: bool,
     #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
     pub bot_token_configured: bool,
     #[serde(default)]
     pub chat_id: String,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub clear_chat_id: bool,
     #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
     pub chat_id_configured: bool,
     #[serde(default)]
@@ -192,6 +196,8 @@ pub struct BarkOverride {
     pub server: String,
     #[serde(default)]
     pub device_key: String,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub clear_device_key: bool,
     #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
     pub device_key_configured: bool,
     #[serde(default)]
@@ -317,13 +323,13 @@ pub fn public_snapshot() -> AdminData {
         access_key.password.clear();
     }
     if let Some(tgbot) = &mut data.tgbot {
-        tgbot.bot_token_configured = is_configured_secret(&tgbot.bot_token);
-        tgbot.chat_id_configured = is_configured_secret(&tgbot.chat_id);
+        tgbot.bot_token_configured = !tgbot.clear_bot_token && is_configured_secret(&tgbot.bot_token);
+        tgbot.chat_id_configured = !tgbot.clear_chat_id && is_configured_secret(&tgbot.chat_id);
         tgbot.bot_token.clear();
         tgbot.chat_id.clear();
     }
     if let Some(bark) = &mut data.bark {
-        bark.device_key_configured = is_configured_secret(&bark.device_key);
+        bark.device_key_configured = !bark.clear_device_key && is_configured_secret(&bark.device_key);
         bark.device_key.clear();
     }
     data
@@ -497,20 +503,20 @@ pub fn effective_expire_notify(base: &ExpireNotifyConfig) -> ExpireNotifyConfig 
     snapshot().expire_notify.unwrap_or_else(|| base.clone())
 }
 
-pub fn tgbot_enabled() -> bool {
-    snapshot().tgbot.is_some_and(|cfg| cfg.enabled)
-}
-
-pub fn bark_enabled() -> bool {
-    snapshot().bark.is_some_and(|cfg| cfg.enabled)
-}
-
 pub fn effective_tgbot_config(base: &notifier::tgbot::Config) -> notifier::tgbot::Config {
     let mut cfg = base.clone();
     if let Some(override_data) = snapshot().tgbot {
         cfg.enabled = override_data.enabled;
-        override_string(&mut cfg.bot_token, override_data.bot_token);
-        override_string(&mut cfg.chat_id, override_data.chat_id);
+        if override_data.clear_bot_token {
+            cfg.bot_token.clear();
+        } else {
+            override_string(&mut cfg.bot_token, override_data.bot_token);
+        }
+        if override_data.clear_chat_id {
+            cfg.chat_id.clear();
+        } else {
+            override_string(&mut cfg.chat_id, override_data.chat_id);
+        }
         override_string(&mut cfg.title, override_data.title);
         override_string(&mut cfg.expire_tpl, override_data.expire_tpl);
         override_string(&mut cfg.health_tpl, override_data.health_tpl);
@@ -523,7 +529,11 @@ pub fn effective_bark_config(base: &notifier::bark::Config) -> notifier::bark::C
     if let Some(override_data) = snapshot().bark {
         cfg.enabled = override_data.enabled;
         override_string(&mut cfg.server, override_data.server);
-        override_string(&mut cfg.device_key, override_data.device_key);
+        if override_data.clear_device_key {
+            cfg.device_key.clear();
+        } else {
+            override_string(&mut cfg.device_key, override_data.device_key);
+        }
         override_string(&mut cfg.title, override_data.title);
         override_string(&mut cfg.group, override_data.group);
         override_string(&mut cfg.icon, override_data.icon);
@@ -544,10 +554,21 @@ pub fn normalize_bark_override(config: &mut BarkOverride) {
     if is_secret_mask(&config.device_key) {
         config.device_key.clear();
     }
+    if config.clear_device_key {
+        config.device_key.clear();
+        if let Some((server, _)) = split_bark_server_and_key(&config.server) {
+            config.server = server;
+        }
+        return;
+    }
+    if !config.device_key.is_empty() {
+        config.clear_device_key = false;
+    }
     if let Some((server, device_key)) = split_bark_server_and_key(&config.server) {
         config.server = server;
         if config.device_key.is_empty() {
             config.device_key = device_key;
+            config.clear_device_key = false;
         }
     }
 }
@@ -748,16 +769,19 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
     data.admin_password_hash.clone_from(&current.admin_password_hash);
     data.admin_session_version = current.admin_session_version;
     if let (Some(next), Some(prev)) = (&mut data.tgbot, &current.tgbot) {
-        if next.bot_token.trim().is_empty() || is_secret_mask(&next.bot_token) {
+        if !next.clear_bot_token && (next.bot_token.trim().is_empty() || is_secret_mask(&next.bot_token)) {
             next.bot_token.clone_from(&prev.bot_token);
+            next.clear_bot_token = prev.clear_bot_token;
         }
-        if next.chat_id.trim().is_empty() || is_secret_mask(&next.chat_id) {
+        if !next.clear_chat_id && (next.chat_id.trim().is_empty() || is_secret_mask(&next.chat_id)) {
             next.chat_id.clone_from(&prev.chat_id);
+            next.clear_chat_id = prev.clear_chat_id;
         }
     }
     if let (Some(next), Some(prev)) = (&mut data.bark, &current.bark) {
-        if next.device_key.trim().is_empty() || is_secret_mask(&next.device_key) {
+        if !next.clear_device_key && (next.device_key.trim().is_empty() || is_secret_mask(&next.device_key)) {
             next.device_key.clone_from(&prev.device_key);
+            next.clear_device_key = prev.clear_device_key;
         }
     }
     for (gid, access_key) in &mut data.access_keys {
@@ -849,6 +873,18 @@ pub(crate) fn normalize_tgbot_override(config: &mut TgbotOverride) {
     if is_secret_mask(&config.chat_id) {
         config.chat_id.clear();
     }
+    if !config.bot_token.is_empty() {
+        config.clear_bot_token = false;
+    }
+    if !config.chat_id.is_empty() {
+        config.clear_chat_id = false;
+    }
+    if config.clear_bot_token {
+        config.bot_token.clear();
+    }
+    if config.clear_chat_id {
+        config.chat_id.clear();
+    }
 }
 
 fn is_secret_mask(value: &str) -> bool {
@@ -883,8 +919,15 @@ fn normalize_alert_rule(rule: &mut AlertRuleOverride) {
     rule.servers = normalized_string_vec(&rule.servers);
     rule.duration = rule.duration.max(30);
     rule.repeat_interval = rule.repeat_interval.max(60);
-    if let Some(threshold) = rule.threshold {
-        rule.threshold = threshold.is_finite().then_some(threshold);
+    if rule.metric == "offline" {
+        rule.threshold = None;
+    } else if let Some(threshold) = rule.threshold {
+        let threshold = if threshold.is_finite() { threshold } else { 0.0 };
+        rule.threshold = Some(if matches!(rule.metric.as_str(), "cpu" | "memory" | "disk") {
+            threshold.clamp(0.0, 100.0)
+        } else {
+            threshold.max(0.0)
+        });
     }
 }
 
@@ -1180,6 +1223,46 @@ mod tests {
     }
 
     #[test]
+    fn notification_secrets_can_be_explicitly_cleared() {
+        let current = AdminData {
+            tgbot: Some(TgbotOverride {
+                bot_token: "old-token".to_string(),
+                chat_id: "old-chat".to_string(),
+                ..Default::default()
+            }),
+            bark: Some(BarkOverride {
+                device_key: "old-device-key".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut next = AdminData {
+            tgbot: Some(TgbotOverride {
+                clear_bot_token: true,
+                clear_chat_id: true,
+                ..Default::default()
+            }),
+            bark: Some(BarkOverride {
+                clear_device_key: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        merge_sensitive_fields(&mut next, &current);
+        normalize_admin_data(&mut next);
+
+        let tgbot = next.tgbot.unwrap();
+        let bark = next.bark.unwrap();
+        assert!(tgbot.bot_token.is_empty());
+        assert!(tgbot.chat_id.is_empty());
+        assert!(bark.device_key.is_empty());
+        assert!(tgbot.clear_bot_token);
+        assert!(tgbot.clear_chat_id);
+        assert!(bark.clear_device_key);
+    }
+
+    #[test]
     fn bark_full_api_url_is_split_into_server_and_device_key() {
         let mut config = BarkOverride {
             server: "https://api.day.app/example-device-key".to_string(),
@@ -1203,5 +1286,54 @@ mod tests {
 
         assert_eq!(config.server, "https://api.day.app/push");
         assert!(config.device_key.is_empty());
+    }
+
+    #[test]
+    fn bark_clear_device_key_does_not_restore_key_from_server_url() {
+        let mut config = BarkOverride {
+            server: "https://api.day.app/example-device-key".to_string(),
+            clear_device_key: true,
+            ..Default::default()
+        };
+
+        normalize_bark_override(&mut config);
+
+        assert_eq!(config.server, "https://api.day.app");
+        assert!(config.device_key.is_empty());
+        assert!(config.clear_device_key);
+    }
+
+    #[test]
+    fn offline_alert_rules_do_not_keep_thresholds() {
+        let mut rule = AlertRuleOverride {
+            id: "rule".to_string(),
+            name: "Offline".to_string(),
+            metric: "offline".to_string(),
+            threshold: Some(90.0),
+            duration: 1,
+            repeat_interval: 1,
+            ..Default::default()
+        };
+
+        normalize_alert_rule(&mut rule);
+
+        assert_eq!(rule.threshold, None);
+        assert_eq!(rule.duration, 30);
+        assert_eq!(rule.repeat_interval, 60);
+    }
+
+    #[test]
+    fn percentage_alert_thresholds_are_bounded() {
+        let mut rule = AlertRuleOverride {
+            id: "rule".to_string(),
+            name: "CPU".to_string(),
+            metric: "cpu".to_string(),
+            threshold: Some(180.0),
+            ..Default::default()
+        };
+
+        normalize_alert_rule(&mut rule);
+
+        assert_eq!(rule.threshold, Some(100.0));
     }
 }

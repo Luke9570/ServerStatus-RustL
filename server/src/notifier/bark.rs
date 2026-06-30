@@ -107,11 +107,7 @@ impl Bark {
             http_client: reqwest::Client::new(),
         };
 
-        add_template(KIND, get_tag(&Event::NodeUp), config.online_tpl);
-        add_template(KIND, get_tag(&Event::NodeDown), config.offline_tpl);
-        add_template(KIND, get_tag(&Event::Custom), config.custom_tpl);
-        add_template(KIND, get_tag(&Event::Expire), config.expire_tpl);
-        add_template(KIND, get_tag(&Event::Health), config.health_tpl);
+        refresh_templates(&config);
 
         o
     }
@@ -145,6 +141,9 @@ impl crate::notifier::Notifier for Bark {
 
     fn send_notify(&self, body: String) -> Result<()> {
         let config = crate::admin::effective_bark_config(self.config);
+        if !config.enabled {
+            return Ok(());
+        }
         if config.device_key.trim().is_empty() {
             error!("bark device_key is empty");
             return Ok(());
@@ -183,6 +182,10 @@ impl crate::notifier::Notifier for Bark {
 
     fn notify(&self, e: &Event, stat: &HostStat) -> Result<()> {
         let config = crate::admin::effective_bark_config(self.config);
+        if !config.enabled {
+            return Ok(());
+        }
+        refresh_templates(&config);
         render_template(
             self.kind(),
             get_tag(e),
@@ -197,4 +200,12 @@ impl crate::notifier::Notifier for Bark {
             }
         })
     }
+}
+
+fn refresh_templates(config: &Config) {
+    add_template(KIND, get_tag(&Event::NodeUp), config.online_tpl.clone());
+    add_template(KIND, get_tag(&Event::NodeDown), config.offline_tpl.clone());
+    add_template(KIND, get_tag(&Event::Custom), config.custom_tpl.clone());
+    add_template(KIND, get_tag(&Event::Expire), config.expire_tpl.clone());
+    add_template(KIND, get_tag(&Event::Health), config.health_tpl.clone());
 }

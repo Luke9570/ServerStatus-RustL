@@ -210,15 +210,23 @@
     button.textContent = busy ? busyText : button.dataset.defaultText;
   }
 
-  function setSecretInput(selector, configured) {
+  function setSecretInput(selector, configured, clearFlag = false) {
     const input = $(selector);
     if (!input) {
       return;
     }
-    input.dataset.secretConfigured = configured ? "1" : "0";
-    input.dataset.secretMasked = configured ? "1" : "0";
-    input.value = configured ? secretMask : "";
-    input.placeholder = configured ? "已配置，输入新值后保存" : "未配置，输入后保存";
+    const isConfigured = Boolean(configured) && !clearFlag;
+    input.dataset.secretConfigured = isConfigured ? "1" : "0";
+    input.dataset.secretOriginalConfigured = isConfigured ? "1" : "0";
+    input.dataset.secretMasked = isConfigured ? "1" : "0";
+    input.dataset.secretClear = clearFlag ? "1" : "0";
+    input.value = isConfigured ? secretMask : "";
+    input.placeholder = clearFlag
+      ? "已标记清空，保存后生效"
+      : isConfigured
+        ? "已配置，输入新值后保存"
+        : "未配置，输入后保存";
+    updateSecretClearButton(input);
   }
 
   function secretInputValue(selector) {
@@ -233,15 +241,59 @@
     return value;
   }
 
+  function secretClearValue(selector) {
+    const input = $(selector);
+    return input?.dataset.secretClear === "1";
+  }
+
   function secretConfigured(selector) {
     const input = $(selector);
-    return input?.dataset.secretConfigured === "1";
+    return input?.dataset.secretClear !== "1" && input?.dataset.secretConfigured === "1";
   }
 
   function restoreSecretInput(input) {
+    if (input.dataset.secretClear === "1") {
+      updateSecretClearButton(input);
+      return;
+    }
     if (input.dataset.secretConfigured === "1" && !input.value.trim()) {
       input.value = secretMask;
       input.dataset.secretMasked = "1";
+    }
+    updateSecretClearButton(input);
+  }
+
+  function updateSecretClearButton(input) {
+    const button = document.getElementById(`${input.id}-clear`);
+    if (!button) {
+      return;
+    }
+    button.classList.toggle("is-active", input.dataset.secretClear === "1");
+    button.disabled = input.dataset.secretOriginalConfigured !== "1" && input.dataset.secretConfigured !== "1";
+  }
+
+  function toggleSecretClear(selector) {
+    const input = $(selector);
+    if (!input) {
+      return;
+    }
+    const nextClear = input.dataset.secretClear !== "1";
+    if (!nextClear && input.dataset.secretOriginalConfigured === "1") {
+      input.dataset.secretConfigured = "1";
+      input.dataset.secretMasked = "1";
+      input.value = secretMask;
+      input.placeholder = "已配置，输入新值后保存";
+    } else {
+      input.dataset.secretConfigured = "0";
+      input.dataset.secretMasked = "0";
+      input.value = "";
+      input.placeholder = "已标记清空，保存后生效";
+    }
+    input.dataset.secretClear = nextClear ? "1" : "0";
+    updateSecretClearButton(input);
+    const localBlock = input.closest(".local-save-block");
+    if (localBlock?.dataset.localScope) {
+      refreshLocalDirty(localBlock.dataset.localScope);
     }
   }
 
@@ -279,17 +331,21 @@
   }
 
   function localSnapshot(scope) {
-    if (scope === "tg") {
-      return stableJson(collectTgbotSettings());
-    }
-    if (scope === "bark") {
-      return stableJson(collectBarkSettings());
-    }
-    if (scope === "access") {
-      return stableJson(collectAccessSettings());
-    }
-    if (scope === "expire") {
-      return stableJson(collectExpireNotifySettings());
+    try {
+      if (scope === "tg") {
+        return stableJson(collectTgbotSettings());
+      }
+      if (scope === "bark") {
+        return stableJson(collectBarkSettings());
+      }
+      if (scope === "access") {
+        return stableJson(collectAccessSettings());
+      }
+      if (scope === "expire") {
+        return stableJson(collectExpireNotifySettings(true));
+      }
+    } catch (_) {
+      return `invalid:${scope}`;
     }
     return "";
   }
@@ -1097,10 +1153,14 @@
   }
 
   function renderTgbotNotification() {
-    const tg = state.settings?.tgbot || state.config?.tgbot || {};
+    const base = state.config?.tgbot || {};
+    const saved = state.settings?.tgbot || {};
+    const tg = { ...base, ...saved };
+    const tokenConfigured = saved.clear_bot_token ? false : Boolean(saved.bot_token_configured || base.bot_token_configured);
+    const chatConfigured = saved.clear_chat_id ? false : Boolean(saved.chat_id_configured || base.chat_id_configured);
     $("#tg-enabled").checked = Boolean(tg.enabled);
-    setSecretInput("#tg-token", Boolean(tg.bot_token_configured));
-    setSecretInput("#tg-chat", Boolean(tg.chat_id_configured));
+    setSecretInput("#tg-token", tokenConfigured, Boolean(saved.clear_bot_token));
+    setSecretInput("#tg-chat", chatConfigured, Boolean(saved.clear_chat_id));
     $("#tg-title").value = tg.title || "";
     $("#tg-expire").value = tg.expire_tpl || "";
     $("#tg-health").value = tg.health_tpl || "";
@@ -1108,10 +1168,13 @@
   }
 
   function renderBarkNotification() {
-    const bark = state.settings?.bark || state.config?.bark || {};
+    const base = state.config?.bark || {};
+    const saved = state.settings?.bark || {};
+    const bark = { ...base, ...saved };
+    const keyConfigured = saved.clear_device_key ? false : Boolean(saved.device_key_configured || base.device_key_configured);
     $("#bark-enabled").checked = Boolean(bark.enabled);
     $("#bark-server").value = bark.server || "https://api.day.app";
-    setSecretInput("#bark-key", Boolean(bark.device_key_configured));
+    setSecretInput("#bark-key", keyConfigured, Boolean(saved.clear_device_key));
     $("#bark-title").value = bark.title || "ServerStatus";
     $("#bark-group").value = bark.group || "ServerStatus";
     $("#bark-expire").value = bark.expire_tpl || "";
@@ -1750,12 +1813,21 @@
     const grid = el("div", "editor-grid");
     const enabled = checkbox(rule.enabled !== false);
     enabled.className = "js-rule-enabled";
+    const threshold = input("js-rule-threshold", rule.threshold ?? "", "number");
+    threshold.min = "0";
+    threshold.step = "0.1";
+    const duration = input("js-rule-duration", rule.duration || 120, "number");
+    duration.min = "30";
+    duration.step = "1";
+    const repeat = input("js-rule-repeat", rule.repeat_interval || 3600, "number");
+    repeat.min = "60";
+    repeat.step = "1";
     grid.append(
       field("名称", input("js-rule-name", rule.name || "")),
       field("类型", select(metricOptions, rule.metric || "offline", "js-rule-metric")),
-      field("阈值", input("js-rule-threshold", rule.threshold ?? "", "number")),
-      field("持续秒", input("js-rule-duration", rule.duration || 120, "number")),
-      field("重复间隔秒", input("js-rule-repeat", rule.repeat_interval || 3600, "number")),
+      field("阈值", threshold),
+      field("持续秒", duration),
+      field("重复间隔秒", repeat),
       field("启用", enabled, "checkbox-field"),
     );
     $("#editor-body").append(
@@ -1793,6 +1865,8 @@
     } else {
       threshold.disabled = false;
       threshold.placeholder = "";
+      threshold.min = "0";
+      threshold.max = ["cpu", "memory", "disk"].includes($(".js-rule-metric").value) ? "100" : "";
       if (!threshold.value && threshold.dataset.savedValue) {
         threshold.value = threshold.dataset.savedValue;
       }
@@ -1804,6 +1878,29 @@
     const editor = state.editor;
     const rules = state.settings.alert_rules.filter((rule) => rule.id !== editor.id);
     const metric = $(".js-rule-metric").value;
+    const thresholdInput = $(".js-rule-threshold");
+    const durationInput = $(".js-rule-duration");
+    const repeatInput = $(".js-rule-repeat");
+    for (const inputNode of [thresholdInput, durationInput, repeatInput]) {
+      inputNode.setCustomValidity("");
+    }
+    if (metric !== "offline" && !thresholdInput.value.trim()) {
+      thresholdInput.setCustomValidity("请填写告警阈值");
+      thresholdInput.reportValidity();
+      return false;
+    }
+    if (metric !== "offline" && !thresholdInput.checkValidity()) {
+      thresholdInput.reportValidity();
+      return false;
+    }
+    if (!durationInput.checkValidity()) {
+      durationInput.reportValidity();
+      return false;
+    }
+    if (!repeatInput.checkValidity()) {
+      repeatInput.reportValidity();
+      return false;
+    }
     rules.push({
       id: editor.id,
       name: $(".js-rule-name").value.trim() || editor.id,
@@ -1818,6 +1915,7 @@
       servers: checkedValues(".js-rule-servers"),
     });
     state.settings.alert_rules = rules;
+    return true;
   }
 
   async function deleteCurrentEditorItem() {
@@ -1958,7 +2056,9 @@
       });
       return;
     } else if (state.editor.type === "alert-rule") {
-      applyAlertRuleEditor();
+      if (!applyAlertRuleEditor()) {
+        return;
+      }
       closeDialog();
       renderTables();
       await saveSettingsPayload(settingsPayloadFromState(), {
@@ -2035,7 +2135,9 @@
     return {
       enabled: $("#tg-enabled").checked,
       bot_token: secretInputValue("#tg-token"),
+      clear_bot_token: secretClearValue("#tg-token"),
       chat_id: secretInputValue("#tg-chat"),
+      clear_chat_id: secretClearValue("#tg-chat"),
       title: $("#tg-title").value,
       expire_tpl: $("#tg-expire").value,
       health_tpl: $("#tg-health").value,
@@ -2047,6 +2149,7 @@
       enabled: $("#bark-enabled").checked,
       server: $("#bark-server").value.trim(),
       device_key: secretInputValue("#bark-key"),
+      clear_device_key: secretClearValue("#bark-key"),
       title: $("#bark-title").value,
       group: $("#bark-group").value,
       expire_tpl: $("#bark-expire").value,
@@ -2080,6 +2183,19 @@
     return "";
   }
 
+  function validateTgbotSettingsForTest(tgbot) {
+    if (!tgbot.enabled) {
+      return "请先勾选启用 Telegram";
+    }
+    if (!tgbot.bot_token && !secretConfigured("#tg-token")) {
+      return "Telegram Bot Token 不能为空";
+    }
+    if (!tgbot.chat_id && !secretConfigured("#tg-chat")) {
+      return "Telegram Chat ID 不能为空";
+    }
+    return "";
+  }
+
   function collectAccessSettings() {
     return {
       access_base_url: normalizeBaseUrl($("#access-base-url").value),
@@ -2087,14 +2203,33 @@
     };
   }
 
-  function collectExpireNotifySettings() {
+  function collectExpireNotifySettings(silent = false) {
+    const daysInput = $("#expire-days");
+    const intervalInput = $("#expire-interval");
+    const rawDays = daysInput.value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const days = rawDays.map((item) => Number(item));
+    daysInput.setCustomValidity("");
+    intervalInput.setCustomValidity("");
+    if (!rawDays.length || days.some((item) => !Number.isInteger(item) || item < 0)) {
+      daysInput.setCustomValidity("请输入逗号分隔的非负整数，例如 30,14,7,3,1,0");
+      if (!silent) {
+        daysInput.reportValidity();
+      }
+      throw new Error("提醒阈值格式无效");
+    }
+    if (!intervalInput.checkValidity()) {
+      if (!silent) {
+        intervalInput.reportValidity();
+      }
+      throw new Error("重复间隔不能小于 60 秒");
+    }
     return {
       enabled: $("#expire-enabled").checked,
-      days: $("#expire-days")
-        .value.split(",")
-        .map((item) => Number(item.trim()))
-        .filter((item) => Number.isFinite(item) && item >= 0),
-      interval: Number($("#expire-interval").value || 86400),
+      days: [...new Set(days)].sort((a, b) => a - b),
+      interval: Number(intervalInput.value || 86400),
     };
   }
 
@@ -2201,10 +2336,17 @@
   }
 
   async function testTgbotSettings() {
+    const tgbot = collectTgbotSettings();
+    const validationMessage = validateTgbotSettingsForTest(tgbot);
+    if (validationMessage) {
+      text("#tg-save-message", validationMessage);
+      showToast(validationMessage, "warn");
+      return;
+    }
     await testNotification(
       "tgbot",
       "tg",
-      { tgbot: collectTgbotSettings() },
+      { tgbot },
       "#tg-test",
       "#tg-save-message",
     );
@@ -2244,7 +2386,14 @@
   }
 
   async function saveExpireNotifySettings() {
-    const expireNotify = collectExpireNotifySettings();
+    let expireNotify;
+    try {
+      expireNotify = collectExpireNotifySettings();
+    } catch (err) {
+      text("#expire-save-message", err.message);
+      showToast(err.message, "warn");
+      return;
+    }
     const ok = await saveSettingsPayload(settingsPayloadFromState({ expire_notify: expireNotify }), {
       successMessage: "到期提醒已同步到后端",
       messageTarget: "#expire-save-message",
@@ -2434,6 +2583,15 @@
     if (!["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) {
       return;
     }
+    if (target instanceof HTMLInputElement && target.classList.contains("secret-input")) {
+      const value = target.value.trim();
+      if (value && value !== secretMask) {
+        target.dataset.secretClear = "0";
+        target.dataset.secretMasked = "0";
+        target.dataset.secretConfigured = "0";
+        updateSecretClearButton(target);
+      }
+    }
     const localBlock = target.closest(".local-save-block");
     if (localBlock?.dataset.localScope) {
       refreshLocalDirty(localBlock.dataset.localScope);
@@ -2466,8 +2624,11 @@
   $("#login-form").addEventListener("submit", login);
   $("#tg-save").addEventListener("click", saveTgbotSettings);
   $("#tg-test").addEventListener("click", testTgbotSettings);
+  $("#tg-token-clear").addEventListener("click", () => toggleSecretClear("#tg-token"));
+  $("#tg-chat-clear").addEventListener("click", () => toggleSecretClear("#tg-chat"));
   $("#bark-save").addEventListener("click", saveBarkSettings);
   $("#bark-test").addEventListener("click", testBarkSettings);
+  $("#bark-key-clear").addEventListener("click", () => toggleSecretClear("#bark-key"));
   $("#access-save").addEventListener("click", saveAccessSettings);
   $("#expire-save").addEventListener("click", saveExpireNotifySettings);
   $("#password-form").addEventListener("submit", changeAdminPassword);
@@ -2501,6 +2662,9 @@
   $("#dashboard").addEventListener("focusin", handleSecretFocus);
   $("#dashboard").addEventListener("focusout", handleSecretBlur);
   setIconButtonIcon($("#user-menu-toggle"), "用户菜单", "user");
+  setIconButtonIcon($("#tg-token-clear"), "清空 Bot Token", "trash");
+  setIconButtonIcon($("#tg-chat-clear"), "清空 Chat ID", "trash");
+  setIconButtonIcon($("#bark-key-clear"), "清空 Device Key", "trash");
   applyTheme(state.theme);
   updateSaveButton();
 

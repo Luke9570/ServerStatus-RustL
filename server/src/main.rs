@@ -148,10 +148,8 @@ async fn main() -> Result<(), anyhow::Error> {
     *notifier::NOTIFIER_HANDLE.lock().unwrap() = Some(Handle::current());
     let cfg = G_CONFIG.get().unwrap();
     let notifies: Arc<Mutex<Vec<Box<dyn notifier::Notifier + Send>>>> = Arc::new(Mutex::new(Vec::new()));
-    if cfg.tgbot.enabled || admin::tgbot_enabled() {
-        let o = Box::new(notifier::tgbot::TGBot::new(&cfg.tgbot));
-        notifies.lock().unwrap().push(o);
-    }
+    let o = Box::new(notifier::tgbot::TGBot::new(&cfg.tgbot));
+    notifies.lock().unwrap().push(o);
     if cfg.wechat.enabled {
         let o = Box::new(notifier::wechat::WeChat::new(&cfg.wechat));
         notifies.lock().unwrap().push(o);
@@ -160,10 +158,8 @@ async fn main() -> Result<(), anyhow::Error> {
         let o = Box::new(notifier::email::Email::new(&cfg.email));
         notifies.lock().unwrap().push(o);
     }
-    if cfg.bark.enabled || admin::bark_enabled() {
-        let o = Box::new(notifier::bark::Bark::new(&cfg.bark));
-        notifies.lock().unwrap().push(o);
-    }
+    let o = Box::new(notifier::bark::Bark::new(&cfg.bark));
+    notifies.lock().unwrap().push(o);
     if cfg.log.enabled {
         let o = Box::new(notifier::log::Log::new(&cfg.log));
         notifies.lock().unwrap().push(o);

@@ -164,11 +164,17 @@
               </label>
               <label>
                 Bot Token
-                <input id="tg-token" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                <div class="secret-field">
+                  <input id="tg-token" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                  <button id="tg-token-clear" class="icon-button secret-clear" type="button" aria-label="清空 Bot Token"></button>
+                </div>
               </label>
               <label>
                 Chat ID
-                <input id="tg-chat" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                <div class="secret-field">
+                  <input id="tg-chat" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                  <button id="tg-chat-clear" class="icon-button secret-clear" type="button" aria-label="清空 Chat ID"></button>
+                </div>
               </label>
               <label>
                 标题
@@ -206,7 +212,10 @@
               </label>
               <label>
                 Device Key
-                <input id="bark-key" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                <div class="secret-field">
+                  <input id="bark-key" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                  <button id="bark-key-clear" class="icon-button secret-clear" type="button" aria-label="清空 Device Key"></button>
+                </div>
               </label>
               <label>
                 标题

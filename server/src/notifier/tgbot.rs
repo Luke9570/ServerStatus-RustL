@@ -48,11 +48,7 @@ impl TGBot {
             http_client: reqwest::Client::new(),
         };
 
-        add_template(KIND, get_tag(&Event::NodeUp), config.online_tpl);
-        add_template(KIND, get_tag(&Event::NodeDown), config.offline_tpl);
-        add_template(KIND, get_tag(&Event::Custom), config.custom_tpl);
-        add_template(KIND, get_tag(&Event::Expire), config.expire_tpl);
-        add_template(KIND, get_tag(&Event::Health), config.health_tpl);
+        refresh_templates(&config);
 
         o
     }
@@ -65,6 +61,13 @@ impl crate::notifier::Notifier for TGBot {
 
     fn send_notify(&self, html_content: String) -> Result<()> {
         let config = crate::admin::effective_tgbot_config(self.config);
+        if !config.enabled {
+            return Ok(());
+        }
+        if config.bot_token.trim().is_empty() || config.chat_id.trim().is_empty() {
+            error!("tg bot_token or chat_id is empty");
+            return Ok(());
+        }
         let mut data = HashMap::new();
         data.insert("chat_id", config.chat_id.clone());
         data.insert("parse_mode", "HTML".to_string());
@@ -95,6 +98,10 @@ impl crate::notifier::Notifier for TGBot {
 
     fn notify(&self, e: &Event, stat: &HostStat) -> Result<()> {
         let config = crate::admin::effective_tgbot_config(self.config);
+        if !config.enabled {
+            return Ok(());
+        }
+        refresh_templates(&config);
         render_template(
             self.kind(),
             get_tag(e),
@@ -118,6 +125,14 @@ impl crate::notifier::Notifier for TGBot {
             }
         })
     }
+}
+
+fn refresh_templates(config: &Config) {
+    add_template(KIND, get_tag(&Event::NodeUp), config.online_tpl.clone());
+    add_template(KIND, get_tag(&Event::NodeDown), config.offline_tpl.clone());
+    add_template(KIND, get_tag(&Event::Custom), config.custom_tpl.clone());
+    add_template(KIND, get_tag(&Event::Expire), config.expire_tpl.clone());
+    add_template(KIND, get_tag(&Event::Health), config.health_tpl.clone());
 }
 
 fn sanitize_tg_error(message: &str, tg_url: &str) -> String {

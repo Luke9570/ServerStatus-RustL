@@ -107,8 +107,16 @@ pub async fn test_admin_notification(
             if let Some(mut override_data) = payload.tgbot {
                 admin::normalize_tgbot_override(&mut override_data);
                 config.enabled = override_data.enabled;
-                override_nonempty_string(&mut config.bot_token, override_data.bot_token);
-                override_nonempty_string(&mut config.chat_id, override_data.chat_id);
+                if override_data.clear_bot_token {
+                    config.bot_token.clear();
+                } else {
+                    override_nonempty_string(&mut config.bot_token, override_data.bot_token);
+                }
+                if override_data.clear_chat_id {
+                    config.chat_id.clear();
+                } else {
+                    override_nonempty_string(&mut config.chat_id, override_data.chat_id);
+                }
                 override_nonempty_string(&mut config.title, override_data.title);
                 override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
                 override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
@@ -121,7 +129,11 @@ pub async fn test_admin_notification(
                 admin::normalize_bark_override(&mut override_data);
                 config.enabled = override_data.enabled;
                 override_nonempty_string(&mut config.server, override_data.server);
-                override_nonempty_string(&mut config.device_key, override_data.device_key);
+                if override_data.clear_device_key {
+                    config.device_key.clear();
+                } else {
+                    override_nonempty_string(&mut config.device_key, override_data.device_key);
+                }
                 override_nonempty_string(&mut config.title, override_data.title);
                 override_nonempty_string(&mut config.group, override_data.group);
                 override_nonempty_string(&mut config.icon, override_data.icon);
@@ -495,6 +507,12 @@ fn access_command_response(
     req_header: &HeaderMap,
     params: &HashMap<String, String>,
 ) -> Response {
+    if let Some(message) = validate_u32_param(params, "interval", 1, 86_400) {
+        return json_error(StatusCode::BAD_REQUEST, &message);
+    }
+    if let Some(message) = validate_u32_param(params, "weight", 1, 1_000_000) {
+        return json_error(StatusCode::BAD_REQUEST, &message);
+    }
     let panel_url = panel_base_url(cfg, req_header);
     let agent_url = agent_base_url(cfg, req_header);
     let uid = query_text(params, "uid").unwrap_or_else(random_server_id);
@@ -654,6 +672,17 @@ fn query_u32_opt(params: &HashMap<String, String>, key: &str, min: u32, max: u32
         .filter(|value| (min..=max).contains(value))
 }
 
+fn validate_u32_param(params: &HashMap<String, String>, key: &str, min: u32, max: u32) -> Option<String> {
+    let value = params
+        .get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())?;
+    match value.parse::<u32>() {
+        Ok(value) if (min..=max).contains(&value) => None,
+        _ => Some(format!("{key} 必须是 {min} 到 {max} 之间的整数")),
+    }
+}
+
 fn query_toggle<'a>(params: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
     match params.get(key).map(|value| value.trim().to_ascii_lowercase()) {
         Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on") => Some("1"),
@@ -716,7 +745,7 @@ pub async fn init_client(uri: Uri, req_header: HeaderMap, Query(params): Query<H
     let alias = params.get("alias").unwrap_or(&invalid);
 
     if pass.is_empty() || (uid.is_empty() && gid.is_empty()) || (uid.is_empty() && alias.is_empty()) {
-        return (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED.to_string()).into_response();
+        return script_error(StatusCode::UNAUTHORIZED, "缺少接入参数，请从后台复制完整接入指令");
     }
 
     // auth
@@ -729,7 +758,7 @@ pub async fn init_client(uri: Uri, req_header: HeaderMap, Query(params): Query<H
         }
     }
     if !auth_ok {
-        return (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED.to_string()).into_response();
+        return script_error(StatusCode::UNAUTHORIZED, "接入密钥无效，请重新复制后台接入指令");
     }
 
     let mut domain = "localhost".to_string();
@@ -901,6 +930,15 @@ pub async fn init_client(uri: Uri, req_header: HeaderMap, Query(params): Query<H
         )
             .into_response(),
     )
+}
+
+fn script_error(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        message.to_string(),
+    )
+        .into_response()
 }
 
 fn render_jinja_ht_tpl(tag: &'static str) -> Response {

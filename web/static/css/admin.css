@@ -785,6 +785,22 @@ button.has-icon {
 label.is-disabled {
   color: color-mix(in srgb, var(--muted) 70%, var(--panel-soft));
 }
+
+.secret-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 6px;
+  align-items: center;
+}
+
+.secret-field input {
+  min-width: 0;
+}
+
+.secret-clear.is-active {
+  border-color: color-mix(in srgb, var(--bad) 55%, var(--line));
+  background: var(--bad-soft);
+  color: var(--bad);
 }
 
 .editor-dialog {

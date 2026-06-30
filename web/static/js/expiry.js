@@ -67,10 +67,7 @@
   }
 
   function treatAsMissing(server) {
-    if (!hasExpiry(server)) {
-      return true;
-    }
-    return hasExpiry(server) && server.expire.status === "expired" && isOnline(server);
+    return !hasExpiry(server);
   }
 
   function daysText(expire) {
@@ -323,6 +320,37 @@
     panel.replaceChildren(header, list);
   }
 
+  function renderErrorPanel(message) {
+    const panel = ensurePanel();
+    if (!panel) {
+      return false;
+    }
+
+    const header = document.createElement("div");
+    header.className = "ssr-expiry-header";
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "ssr-expiry-title-wrap";
+    const title = document.createElement("div");
+    title.className = "ssr-expiry-title";
+    title.textContent = "状态加载失败";
+    const subtitle = document.createElement("div");
+    subtitle.className = "ssr-expiry-subtitle";
+    subtitle.textContent = message || "无法读取 /json/stats.json";
+    titleWrap.append(title, subtitle);
+    header.append(titleWrap, metric("状态", "异常", "danger"));
+
+    const list = document.createElement("div");
+    list.className = "ssr-expiry-list";
+    const quiet = document.createElement("div");
+    quiet.className = "ssr-expiry-quiet ssr-empty-state ssr-expiry-error";
+    quiet.textContent = "请检查服务端是否运行正常，或确认反向代理已放行 /json/stats.json。";
+    list.append(quiet);
+
+    panel.hidden = false;
+    panel.replaceChildren(header, list);
+    return true;
+  }
+
   function renderPanel(servers, updated) {
     const panel = ensurePanel();
     if (!panel) {
@@ -452,7 +480,6 @@
     const parts = [
       `到期: ${expire.date || expire.raw || "-"}`,
       `状态: ${daysText(expire)}`,
-      expire.original_date && expire.original_date !== expire.date ? `原始: ${expire.original_date}` : "",
       renewalText(expire),
       expire.amount ? `金额: ${expire.amount}` : "",
     ].filter(Boolean);
@@ -568,11 +595,13 @@
     try {
       const response = await (nativeFetch || window.fetch)(SOURCE_URL, { cache: "no-store" });
       if (!response.ok) {
+        renderErrorPanel(`${response.status} ${response.statusText || "读取失败"}`);
         return;
       }
       render(await response.json());
     } catch (err) {
       console.debug("expiry refresh failed", err);
+      renderErrorPanel(err && err.message ? err.message : "无法读取节点状态");
     }
   }
 
