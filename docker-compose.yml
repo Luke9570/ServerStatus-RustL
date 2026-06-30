@@ -11,6 +11,7 @@ services:
       - ./runtime:/data
     ports:
       - 8080:8080
+      # 可选：只有需要直接暴露 gRPC/兼容 Agent 入口时才保留。
       - 9394:9394
     networks:
       - default

@@ -8,7 +8,7 @@
 
 - VPS 状态主页：在线状态、CPU、内存、硬盘、流量、负载、网络和剩余到期天数。
 - 后台管理：服务器、分组、告警规则、通知方式、接入地址、到期提醒和账号密码。
-- 动态接入：后台生成一键 Agent 接入命令，自动生成接入密钥。
+- 动态接入：后台生成一键 Agent 接入命令，自动生成接入密钥，安装 URL 只携带短期接入令牌。
 - 到期管理：支持到期日期、永久、免费、自动续期周期和到期提醒。
 - 健康告警：支持离线、CPU、内存、硬盘和负载持续超阈值提醒。
 - 通知通道：Telegram Bot 与 Bark，可用于到期提醒和健康告警。
@@ -17,7 +17,10 @@
 ## 安全边界
 
 - 后台 API 使用 JWT 保护，未登录或错误 token 应返回 `401`。
+- 登录接口会对连续失败做短时间限速，避免后台密码被高频尝试。
 - 前端可读取的后台配置会脱敏，不返回 Agent 密码、接入组密码、`admin_pass`、`jwt_secret`、Telegram token 或 Bark device key。
+- 后台复制的一键接入 URL 不再包含真实 Agent/接入组密码，只包含默认 24 小时有效的安装令牌。
+- 静态页面会返回基础安全响应头，例如 `X-Content-Type-Options`、`Referrer-Policy` 和 `X-Frame-Options`。这些响应头不影响 Nginx Proxy Manager 反向代理。
 - 后台修改的运行时配置会写入 `runtime/admin-overrides.json`，不要提交到 Git。
 - 不要提交 `runtime/`、`admin-overrides.json`、`stats.json`、真实后台密码、JWT 密钥、通知 token 或接入密钥。
 
@@ -47,15 +50,19 @@ docker compose logs -f stat_server
 
 - 面板：`http://服务器IP:8080/`
 - 后台：`http://服务器IP:8080/admin`
-- Prometheus/metrics：`9394`
+- gRPC/兼容 Agent 入口：`9394`
 
-`config.toml` 中 `admin_pass` 留空时，服务启动日志会生成随机后台密码；`jwt_secret` 留空时会生成本次启动可用的随机密钥。正式使用建议改成强随机值：
+`config.toml` 中 `admin_pass` 留空且还没有通过后台保存过密码时，服务启动日志会生成随机后台密码。只要 `config.toml` 已配置 `admin_pass`，或 `runtime/admin-overrides.json` 中已有后台密码哈希，启动日志就不会再打印临时密码。
+
+`jwt_secret` 留空时会生成本次启动可用的随机密钥。正式使用建议改成强随机值：
 
 ```bash
 openssl rand -base64 32
 ```
 
 后台登录成功后，账号密码修改会写入 `runtime/admin-overrides.json`。密码只保存 PBKDF2 哈希，不会明文保存。
+
+`docker-compose.yml` 默认仍映射 `9394:9394`，方便需要 gRPC/兼容入口的部署。只使用 Web 面板和 HTTP `/report` 上报时，可以自行移除这条端口映射，反向代理只需要转发 `8080`。
 
 ## 日常更新
 
@@ -135,7 +142,9 @@ Agent 上报          -> 源站域名/IP -> stat_server
 
 ## Agent 接入
 
-推荐在后台“接入服务器”中复制一键接入命令。后台会自动生成接入密钥和参数。
+推荐在后台“接入服务器”中复制一键接入命令。后台会自动生成接入密钥和参数。复制出来的安装地址使用短期接入令牌，真实接入密钥不会出现在浏览器地址栏、CDN 日志或 NPM 访问日志中。
+
+安装令牌默认 24 小时有效。过期后重新在后台复制接入命令即可。旧版 `pass=` 接入 URL 仍保留兼容，但不建议继续手动传播。
 
 手动 HTTP 上报示例：
 

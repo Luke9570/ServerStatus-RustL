@@ -1,6 +1,6 @@
 use axum::{
     extract::FromRequestParts,
-    http::{request::Parts, StatusCode},
+    http::{header::HeaderMap, request::Parts, StatusCode},
     response::{IntoResponse, Response},
     Json, RequestPartsExt,
 };
@@ -12,23 +12,34 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::fmt::Display;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::G_CONFIG;
 
 const ADMIN_SCOPE: &str = "admin";
 const TOKEN_TTL_SECONDS: u64 = 3 * 24 * 3600;
+const LOGIN_MAX_FAILURES: u32 = 5;
+const LOGIN_LOCK_SECONDS: usize = 5 * 60;
+
+static LOGIN_ATTEMPTS: Lazy<Mutex<HashMap<String, LoginAttempt>>> = Lazy::new(Default::default);
 
 pub static KEYS: Lazy<Keys> = Lazy::new(|| {
     let cfg = G_CONFIG.get().unwrap();
     Keys::new(cfg.jwt_secret.as_ref().unwrap().as_bytes())
 });
 
-pub async fn authorize(Json(payload): Json<AuthPayload>) -> Result<Json<AuthBody>, AuthError> {
+pub async fn authorize(headers: HeaderMap, Json(payload): Json<AuthPayload>) -> Result<Json<AuthBody>, AuthError> {
     let username = payload.username.trim();
     if username.is_empty() || payload.password.is_empty() {
         return Err(AuthError::MissingCredentials);
+    }
+    let login_key = login_attempt_key(&headers, username);
+    let now = unix_ts();
+    if login_attempt_limited(&mut LOGIN_ATTEMPTS.lock().unwrap(), &login_key, now) {
+        return Err(AuthError::TooManyAttempts);
     }
 
     let mut auth_ok = false;
@@ -36,10 +47,11 @@ pub async fn authorize(Json(payload): Json<AuthPayload>) -> Result<Json<AuthBody
         auth_ok = cfg.admin_auth(username, &payload.password);
     }
     if !auth_ok {
+        record_login_failure(&mut LOGIN_ATTEMPTS.lock().unwrap(), &login_key, now);
         return Err(AuthError::WrongCredentials);
     }
+    clear_login_attempts(&mut LOGIN_ATTEMPTS.lock().unwrap(), &login_key);
 
-    let now = unix_ts();
     let claims = Claims {
         sub: username.to_owned(),
         scope: ADMIN_SCOPE.to_owned(),
@@ -94,6 +106,7 @@ pub enum AuthError {
     MissingCredentials,
     TokenCreation,
     InvalidToken,
+    TooManyAttempts,
 }
 
 impl Display for Claims {
@@ -151,6 +164,7 @@ impl IntoResponse for AuthError {
             AuthError::MissingCredentials => (StatusCode::BAD_REQUEST, "Missing credentials"),
             AuthError::TokenCreation => (StatusCode::INTERNAL_SERVER_ERROR, "Token creation error"),
             AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token"),
+            AuthError::TooManyAttempts => (StatusCode::TOO_MANY_REQUESTS, "Too many login attempts"),
         };
         let body = Json(json!({
             "error": error_message,
@@ -161,4 +175,81 @@ impl IntoResponse for AuthError {
 
 fn unix_ts() -> usize {
     usize::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap_or(usize::MAX)
+}
+
+#[derive(Debug, Clone, Default)]
+struct LoginAttempt {
+    failures: u32,
+    locked_until: usize,
+}
+
+fn login_attempt_key(headers: &HeaderMap, username: &str) -> String {
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("unknown");
+    format!("{}:{}", ip, username.trim().to_ascii_lowercase())
+}
+
+fn login_attempt_limited(attempts: &mut HashMap<String, LoginAttempt>, key: &str, now: usize) -> bool {
+    let Some(attempt) = attempts.get(key) else {
+        return false;
+    };
+    if attempt.locked_until > now {
+        return true;
+    }
+    if attempt.locked_until > 0 {
+        attempts.remove(key);
+    }
+    false
+}
+
+fn record_login_failure(attempts: &mut HashMap<String, LoginAttempt>, key: &str, now: usize) {
+    let attempt = attempts.entry(key.to_string()).or_default();
+    attempt.failures = attempt.failures.saturating_add(1);
+    if attempt.failures >= LOGIN_MAX_FAILURES {
+        attempt.locked_until = now.saturating_add(LOGIN_LOCK_SECONDS);
+    }
+}
+
+fn clear_login_attempts(attempts: &mut HashMap<String, LoginAttempt>, key: &str) {
+    attempts.remove(key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_attempts_lock_after_repeated_failures() {
+        let mut attempts = HashMap::new();
+        let key = "127.0.0.1:admin";
+        for _ in 0..LOGIN_MAX_FAILURES {
+            assert!(!login_attempt_limited(&mut attempts, key, 100));
+            record_login_failure(&mut attempts, key, 100);
+        }
+
+        assert!(login_attempt_limited(&mut attempts, key, 101));
+        assert!(!login_attempt_limited(&mut attempts, key, 100 + LOGIN_LOCK_SECONDS + 1));
+    }
+
+    #[test]
+    fn login_attempts_clear_after_success() {
+        let mut attempts = HashMap::new();
+        let key = "127.0.0.1:admin";
+        record_login_failure(&mut attempts, key, 100);
+        clear_login_attempts(&mut attempts, key);
+
+        assert!(!attempts.contains_key(key));
+    }
 }

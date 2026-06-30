@@ -518,9 +518,13 @@ fn access_command_response(
     let uid = query_text(params, "uid").unwrap_or_else(random_server_id);
     let alias = query_text(params, "alias");
     let interval = query_u32(&params, "interval", 1, 1, 86_400).to_string();
+    let install_token = match admin::create_install_token(&group.gid) {
+        Ok(token) => token,
+        Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+    };
     let mut query = Vec::new();
     push_query_pair(&mut query, "gid", &group.gid);
-    push_query_pair(&mut query, "pass", &group.password);
+    push_query_pair(&mut query, "token", &install_token);
     push_query_pair(&mut query, "uid", &uid);
     if let Some(alias) = &alias {
         push_query_pair(&mut query, "alias", alias);
@@ -554,6 +558,7 @@ fn access_command_response(
             "agent_url": agent_url,
             "install_url": install_url,
             "script": script,
+            "token_expires_in": 86400,
             "params": {
                 "uid": uid,
                 "alias": alias,
@@ -739,10 +744,26 @@ pub async fn init_client(uri: Uri, req_header: HeaderMap, Query(params): Query<H
 
     // query args
     let invalid = String::new();
-    let pass = params.get("pass").unwrap_or(&invalid);
+    let mut pass = params.get("pass").unwrap_or(&invalid).to_string();
     let uid = params.get("uid").unwrap_or(&invalid);
-    let gid = params.get("gid").unwrap_or(&invalid);
+    let mut gid = params.get("gid").unwrap_or(&invalid).to_string();
     let alias = params.get("alias").unwrap_or(&invalid);
+    let install_token = params
+        .get("token")
+        .or_else(|| params.get("install_token"))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+
+    if let Some(token) = install_token {
+        let Some(cfg) = G_CONFIG.get() else {
+            return script_error(StatusCode::UNAUTHORIZED, "接入令牌无效或已过期");
+        };
+        let Some(group) = admin::resolve_install_token(&cfg.hosts_group_map, token) else {
+            return script_error(StatusCode::UNAUTHORIZED, "接入令牌无效或已过期");
+        };
+        gid = group.gid;
+        pass = group.password;
+    }
 
     if pass.is_empty() || (uid.is_empty() && gid.is_empty()) || (uid.is_empty() && alias.is_empty()) {
         return script_error(StatusCode::UNAUTHORIZED, "缺少接入参数，请从后台复制完整接入指令");
@@ -751,10 +772,12 @@ pub async fn init_client(uri: Uri, req_header: HeaderMap, Query(params): Query<H
     // auth
     let mut auth_ok = false;
     if let Some(cfg) = G_CONFIG.get() {
-        if gid.is_empty() {
-            auth_ok = cfg.auth(uid, pass);
+        if install_token.is_some() {
+            auth_ok = true;
+        } else if gid.is_empty() {
+            auth_ok = cfg.auth(uid, &pass);
         } else {
-            auth_ok = cfg.group_auth(gid, pass);
+            auth_ok = cfg.group_auth(&gid, &pass);
         }
     }
     if !auth_ok {
@@ -958,18 +981,12 @@ fn render_jinja_ht_tpl(tag: &'static str) -> Response {
         )
 }
 
-pub async fn get_map(
-    // _claims: jwt::Claims
-    _auth: auth::AdminAuth,
-) -> Response {
+pub async fn get_map(_claims: jwt::Claims) -> Response {
     render_jinja_ht_tpl("map")
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn get_detail(
-    // _claims: jwt::Claims
-    _auth: auth::AdminAuth,
-) -> Response {
+pub async fn get_detail(_claims: jwt::Claims) -> Response {
     let resp = G_STATS_MGR.get().unwrap().get_stats();
     let o = resp.lock().unwrap();
 

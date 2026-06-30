@@ -18,12 +18,11 @@ use tokio::runtime::Handle;
 use tokio::signal;
 
 use axum::{
-    http::{Method, Uri},
+    http::Uri,
     response::IntoResponse,
     routing::{delete, get, post},
     Router,
 };
-use tower_http::cors::{Any, CorsLayer};
 
 mod admin;
 mod assets;
@@ -53,10 +52,6 @@ struct Args {
 }
 
 fn create_app_router() -> Router {
-    let cors_layer = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::DELETE])
-        .allow_origin(Any);
-
     Router::new()
         .route("/report", post(http::report))
         .route("/json/stats.json", get(http::get_stats_json)) // 兼容就旧主题
@@ -80,7 +75,6 @@ fn create_app_router() -> Router {
         .route("/i", get(http::init_client))
         .route("/", get(assets::index_handler))
         .fallback(fallback)
-        .layer(cors_layer)
 }
 
 async fn fallback(uri: Uri) -> impl IntoResponse {
@@ -119,6 +113,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let args = Args::parse();
 
     eprintln!("✨ {} {}", env!("CARGO_BIN_NAME"), env!("APP_VERSION"));
+    admin::init().unwrap();
 
     // config test
     if args.config_test {
@@ -139,8 +134,6 @@ async fn main() -> Result<(), anyhow::Error> {
         error!("can't parse config");
         process::exit(1);
     }
-    admin::init().unwrap();
-
     // init tpl
     http::init_jinja_tpl().unwrap();
 

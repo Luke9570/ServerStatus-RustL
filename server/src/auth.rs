@@ -1,6 +1,6 @@
 use axum::{
     extract::FromRequestParts,
-    http::{header, request::Parts, StatusCode},
+    http::{request::Parts, StatusCode},
     response::{IntoResponse, Response},
     RequestPartsExt,
 };
@@ -18,8 +18,6 @@ pub struct BasicAuth {
     pub password: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AdminAuth(BasicAuth);
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HostAuth(BasicAuth);
 
@@ -40,47 +38,6 @@ where
             username: basic_auth.username().into(),
             password: basic_auth.password().into(),
         })
-    }
-}
-
-impl<S> FromRequestParts<S> for AdminAuth
-where
-    S: Send + Sync,
-{
-    type Rejection = Response;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let unauth = (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, r#"Basic realm="Restricted""#)],
-            StatusCode::UNAUTHORIZED.as_str(),
-        )
-            .into_response();
-
-        // Extract the token from the authorization header
-        let TypedHeader(Authorization(basic_auth)) = parts
-            .extract::<TypedHeader<Authorization<Basic>>>()
-            .await
-            .map_err(|_| unauth)?;
-
-        let mut auth_ok = false;
-        if let Some(cfg) = G_CONFIG.get() {
-            //
-            auth_ok = cfg.admin_auth(basic_auth.username(), basic_auth.password());
-        }
-        if !auth_ok {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, r#"Basic realm="Restricted""#)],
-                StatusCode::UNAUTHORIZED.as_str(),
-            )
-                .into_response());
-        }
-
-        Ok(AdminAuth(BasicAuth {
-            username: basic_auth.username().into(),
-            password: basic_auth.password().into(),
-        }))
     }
 }
 

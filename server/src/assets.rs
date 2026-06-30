@@ -54,6 +54,9 @@ where
                     [
                         (header::CONTENT_TYPE, mime.as_ref()),
                         (header::CACHE_CONTROL, cache_control_for(path.as_str())),
+                        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                        (header::REFERRER_POLICY, "same-origin"),
+                        (header::X_FRAME_OPTIONS, "DENY"),
                     ],
                     content.data,
                 )

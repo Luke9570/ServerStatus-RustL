@@ -14,7 +14,7 @@ jwt_secret = "" # 修改这个, 使用 openssl rand -base64 16 生成 secret
 admin_user = "admin"
 admin_pass = "" # 留空时启动会随机生成；正式部署请设置强密码
 
-# hosts 跟 hosts_group 两种配置模式任挑一种配置即可
+# hosts 跟 hosts_group 两种配置模式任挑一种配置即可。默认不预置可接入节点，避免示例密码被误用。
 # name 主机唯一标识，不可重复，alias 为展示名
 # notify = false 单独禁止单台机器的告警，一般针对网络差，频繁上下线
 # monthstart = 1 没启用vnstat时，表示月流量从每月哪天开始统计
@@ -29,29 +29,16 @@ hosts = [
   # With billing.auto_renewal enabled, cycle is used to calculate the next due date locally.
   # Supported cycle examples: Day, Week, Month, Quarter, HalfYear, Year, 30d, 3m, 1y.
   # Larger weight floats higher while online; offline nodes are always placed at the bottom.
-  # {name = "example", password = "p1", alias = "example", weight = 10050, expire = "2026-12-31", billing = {start_date = "2026-01-01", end_date = "2026-12-31", auto_renewal = "1", cycle = "Year", amount = "200EUR"}, labels = "spec=2C/4G/60G;"},
-  {name = "h1", password = "p1", alias = "n1", location = "🏠", type = "kvm", labels = "os=freebsd;ndd=2022/11/25;spec=2C/4G/60G;"},
-  {name = "h2", password = "p2", alias = "n2", location = "🏢", type = "kvm", disabled = false},
-  {name = "h3", password = "p3", alias = "n3", location = "🏡", type = "kvm", monthstart = 1},
-  {name = "h4", password = "p4", alias = "n4", location = "cn", type = "kvm", notify = true, labels = "ndd=2022/11/25;spec=2C/4G/60G;"},
-
-  # 最小化配置
-  {name = "mac", password = "pp", alias = "macos"},
-  {name = "pi", password = "pp", alias = "pi", labels = "os=pi"},
-  {name = "win", password = "pp", alias = "windows"},
-  {name = "android", password = "pp", alias = "android", labels = "os=android"},
+  # {name = "example", password = "<agent-password>", alias = "example", weight = 10050, expire = "2026-12-31", billing = {start_date = "2026-01-01", end_date = "2026-12-31", auto_renewal = "1", cycle = "Year", amount = "200EUR"}, labels = "spec=2C/4G/60G;"},
 ]
 
 # 动态注册模式，不再需要针对每一个主机做单独配置
 # gid 为模板组id, 自动注册唯一标识，不可重复
 # eg. ./stat_client -a "http://127.0.0.1:8080/report" -g g1 -p pp
 hosts_group = [
-  {gid = "renew", password = "pp", location = "us", type = "kvm", billing = {end_date = "2022-11-25", auto_renewal = "1", cycle = "Year", amount = "200EUR"}, labels = "os=centos;spec=2C/4G/60G;"},
-  # 可以按国家地区或用途来做分组
-  {gid = "g1", password = "pp", location = "🏠", type = "kvm", labels = "os=centos;ndd=2022/11/25;spec=2C/4G/60G;"},
-  {gid = "g2", password = "pp", location = "🏢", type = "kvm", notify = true},
-  # 例如不发送通知可以单独做一组
-  {gid = "silent", password = "pp", location = "🏡", type = "kvm", notify = false},
+  # 后台“接入服务器”会自动创建 default 接入组并生成强随机接入密钥。
+  # 也可以手动配置，例如：
+  # {gid = "default", password = "<agent-password>", location = "us", type = "kvm", billing = {end_date = "2026-12-31", auto_renewal = "1", cycle = "Year", amount = "200EUR"}, labels = "spec=2C/4G/60G;"},
 ]
 # 动态注册模式下，无效数据清理间隔，默认 30s
 # 这个设置要比较通知间隔 notify_interval 大，不然收不到告警通知

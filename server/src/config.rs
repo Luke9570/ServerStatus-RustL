@@ -400,8 +400,10 @@ pub fn from_str(content: &str) -> Option<Config> {
     }
 
     eprintln!("✨ admin_user: {}", o.admin_user.as_ref()?);
-    if generated_admin_pass {
+    if should_print_generated_admin_pass(generated_admin_pass, crate::admin::admin_password_override_configured()) {
         eprintln!("✨ admin_pass: {}", o.admin_pass.as_ref()?);
+    } else if generated_admin_pass {
+        eprintln!("✨ admin_pass: configured in admin override (hidden)");
     } else {
         eprintln!("✨ admin_pass: configured (hidden)");
     }
@@ -412,6 +414,22 @@ pub fn from_str(content: &str) -> Option<Config> {
     }
 
     Some(o)
+}
+
+fn should_print_generated_admin_pass(generated_admin_pass: bool, admin_override_configured: bool) -> bool {
+    generated_admin_pass && !admin_override_configured
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_print_generated_admin_pass;
+
+    #[test]
+    fn generated_admin_password_is_hidden_when_override_exists() {
+        assert!(should_print_generated_admin_pass(true, false));
+        assert!(!should_print_generated_admin_pass(true, true));
+        assert!(!should_print_generated_admin_pass(false, false));
+    }
 }
 
 pub fn from_file(cfg: &str) -> Option<Config> {

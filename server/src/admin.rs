@@ -1,7 +1,7 @@
 use anyhow::Result;
 use once_cell::sync::OnceCell;
 use ring::rand::SecureRandom;
-use ring::{pbkdf2, rand};
+use ring::{digest, pbkdf2, rand};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -26,6 +26,7 @@ const ADMIN_PASSWORD_HASH_BYTES: usize = 32;
 const MIN_ADMIN_PASSWORD_LEN: usize = 12;
 const MAX_ADMIN_PASSWORD_LEN: usize = 256;
 const MAX_ADMIN_USERNAME_LEN: usize = 64;
+const INSTALL_TOKEN_TTL_SECONDS: u64 = 24 * 3600;
 
 static ADMIN_STATE: OnceCell<AdminState> = OnceCell::new();
 
@@ -110,6 +111,16 @@ pub struct NotificationGroupOverride {
     pub name: String,
     #[serde(default)]
     pub notifications: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InstallTokenOverride {
+    #[serde(default)]
+    pub gid: String,
+    #[serde(default)]
+    pub token_hash: String,
+    #[serde(default)]
+    pub expires_at: u64,
 }
 
 fn default_alert_repeat_interval() -> u64 {
@@ -242,6 +253,8 @@ pub struct AdminData {
     pub notification_groups: Vec<NotificationGroupOverride>,
     #[serde(default)]
     pub alert_rules: Vec<AlertRuleOverride>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub install_tokens: HashMap<String, InstallTokenOverride>,
     #[serde(default)]
     pub access_base_url: String,
     #[serde(default)]
@@ -332,6 +345,7 @@ pub fn public_snapshot() -> AdminData {
         bark.device_key_configured = !bark.clear_device_key && is_configured_secret(&bark.device_key);
         bark.device_key.clear();
     }
+    data.install_tokens.clear();
     data
 }
 
@@ -402,6 +416,38 @@ pub fn ensure_default_access_key() -> Result<HostGroup> {
         .ok_or_else(|| anyhow::anyhow!("failed to create default access key"))
 }
 
+pub fn create_install_token(gid: &str) -> Result<String> {
+    let state = ADMIN_STATE.get().expect("admin state not initialized");
+    let token = random_install_token();
+    let now = unix_ts();
+    let token_data = InstallTokenOverride {
+        gid: gid.trim().to_string(),
+        token_hash: install_token_hash(&token),
+        expires_at: now.saturating_add(INSTALL_TOKEN_TTL_SECONDS),
+    };
+
+    let mut data = state.data.lock().unwrap().clone();
+    data.install_tokens.retain(|_, item| install_token_valid_at(item, now));
+    data.install_tokens.insert(token_data.token_hash.clone(), token_data);
+    write_data(state, data)?;
+    Ok(token)
+}
+
+pub fn resolve_install_token(base: &HashMap<String, HostGroup>, token: &str) -> Option<HostGroup> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let token_hash = install_token_hash(token);
+    let now = unix_ts();
+    let data = snapshot();
+    let item = data
+        .install_tokens
+        .values()
+        .find(|item| item.token_hash == token_hash && install_token_valid_at(item, now))?;
+    effective_group_from_data(&data, base, &item.gid)
+}
+
 pub fn effective_admin_user(base: Option<&str>) -> Option<String> {
     let data = snapshot();
     data.admin_user
@@ -432,6 +478,13 @@ fn admin_password_matches_from_data(data: &AdminData, base: Option<&str>, passwo
 
 pub fn admin_session_version() -> u64 {
     snapshot().admin_session_version
+}
+
+pub fn admin_password_override_configured() -> bool {
+    snapshot()
+        .admin_password_hash
+        .as_deref()
+        .is_some_and(|hash| !hash.trim().is_empty())
 }
 
 #[derive(Debug)]
@@ -768,6 +821,7 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
     data.admin_user.clone_from(&current.admin_user);
     data.admin_password_hash.clone_from(&current.admin_password_hash);
     data.admin_session_version = current.admin_session_version;
+    data.install_tokens.clone_from(&current.install_tokens);
     if let (Some(next), Some(prev)) = (&mut data.tgbot, &current.tgbot) {
         if !next.clear_bot_token && (next.bot_token.trim().is_empty() || is_secret_mask(&next.bot_token)) {
             next.bot_token.clone_from(&prev.bot_token);
@@ -862,6 +916,11 @@ fn normalize_admin_data(data: &mut AdminData) {
         .retain(|gid, _| !gid.trim().is_empty() && !deleted.contains(gid));
     data.groups
         .retain(|gid, _| !gid.trim().is_empty() && !deleted.contains(gid));
+
+    let now = unix_ts();
+    data.install_tokens.retain(|token, item| {
+        !token.trim().is_empty() && !item.gid.trim().is_empty() && install_token_valid_at(item, now)
+    });
 }
 
 pub(crate) fn normalize_tgbot_override(config: &mut TgbotOverride) {
@@ -1125,6 +1184,25 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+fn random_install_token() -> String {
+    format!("it_{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
+}
+
+fn install_token_hash(token: &str) -> String {
+    hex_encode(digest::digest(&digest::SHA256, token.trim().as_bytes()).as_ref())
+}
+
+fn install_token_valid_at(token: &InstallTokenOverride, now: u64) -> bool {
+    !token.token_hash.trim().is_empty() && token.expires_at >= now
+}
+
+fn unix_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
@@ -1301,6 +1379,63 @@ mod tests {
         assert_eq!(config.server, "https://api.day.app");
         assert!(config.device_key.is_empty());
         assert!(config.clear_device_key);
+    }
+
+    #[test]
+    fn install_token_hash_does_not_store_raw_token() {
+        let token = "it_example-token";
+        let hash = install_token_hash(token);
+
+        assert_ne!(hash, token);
+        assert_eq!(hash.len(), 64);
+        assert_eq!(hash, install_token_hash(token));
+    }
+
+    #[test]
+    fn install_token_expiry_is_enforced() {
+        let valid = InstallTokenOverride {
+            token_hash: install_token_hash("it_valid"),
+            expires_at: 100,
+            ..Default::default()
+        };
+        let expired = InstallTokenOverride {
+            token_hash: install_token_hash("it_expired"),
+            expires_at: 99,
+            ..Default::default()
+        };
+
+        assert!(install_token_valid_at(&valid, 100));
+        assert!(!install_token_valid_at(&expired, 100));
+    }
+
+    #[test]
+    fn expired_install_tokens_are_removed_from_settings() {
+        let mut data = AdminData {
+            install_tokens: HashMap::from([
+                (
+                    "expired".to_string(),
+                    InstallTokenOverride {
+                        gid: "default".to_string(),
+                        token_hash: install_token_hash("it_expired"),
+                        expires_at: 1,
+                    },
+                ),
+                (
+                    "valid".to_string(),
+                    InstallTokenOverride {
+                        gid: "default".to_string(),
+                        token_hash: install_token_hash("it_valid"),
+                        expires_at: u64::MAX,
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        normalize_admin_data(&mut data);
+
+        assert_eq!(data.install_tokens.len(), 1);
+        assert!(data.install_tokens.contains_key("valid"));
     }
 
     #[test]
