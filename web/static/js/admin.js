@@ -1036,37 +1036,37 @@
     return wrap;
   }
 
+  function tableCell(...children) {
+    const cell = document.createElement("td");
+    const wrap = el("div", "cell-center");
+    wrap.append(...children);
+    cell.append(wrap);
+    return cell;
+  }
+
   function serverRow(item) {
     const row = document.createElement("tr");
     row.dataset.id = item.id;
     const online = Boolean(item.stat?.online4 || item.stat?.online6);
 
-    const name = document.createElement("td");
     const nameWrap = el("div", "node-name");
     nameWrap.append(el("strong", "", item.alias || item.id), el("span", "", `ID: ${item.id}`));
-    name.append(nameWrap);
+    const name = tableCell(nameWrap);
 
-    const status = document.createElement("td");
-    status.append(statusPill(item.stat));
+    const status = tableCell(statusPill(item.stat));
 
-    const group = document.createElement("td");
-    group.append(tagList(item.groups, "未分组"));
+    const group = tableCell(tagList(item.groups, "未分组"));
 
-    const system = document.createElement("td");
     const systemWrap = el("div", "stack");
     systemWrap.append(el("strong", "", item.os || "-"), el("span", "muted", item.region || "未知地区"));
-    system.append(systemWrap);
+    const system = tableCell(systemWrap);
 
-    const note = document.createElement("td");
-    note.append(el("span", "pill", item.public_note || item.spec || "无备注"));
+    const note = tableCell(el("span", "pill", item.public_note || item.spec || "无备注"));
 
-    const expire = document.createElement("td");
-    expire.append(el("span", "pill", formatExpireSummary(item.billing)));
+    const expire = tableCell(el("span", "pill", formatExpireSummary(item.billing)));
 
-    const weight = document.createElement("td");
-    weight.append(el("span", "muted", item.weight ? String(item.weight) : "默认"));
+    const weight = tableCell(el("span", "muted", item.weight ? String(item.weight) : "默认"));
 
-    const actions = document.createElement("td");
     const actionWrap = el("div", "row-actions");
     const edit = actionButton("编辑", "secondary compact-action");
     edit.addEventListener("click", () => openServerEditor(item.id));
@@ -1076,7 +1076,7 @@
     remove.addEventListener("click", () => deleteServer(item, row));
     actionWrap.append(remove);
     actionWrap.append(el("span", "row-message js-row-message"));
-    actions.append(actionWrap);
+    const actions = tableCell(actionWrap);
 
     row.append(name, status, group, system, note, expire, weight, actions);
     return row;

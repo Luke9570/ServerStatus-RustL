@@ -518,26 +518,28 @@ tbody tr:hover {
 }
 
 #server-rows td {
-  height: 58px;
+  height: 62px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
-#server-rows td > .node-name,
-#server-rows td > .stack,
-#server-rows td > .pill,
-#server-rows td > .status-pill,
-#server-rows td > .tag-list,
-#server-rows td > .row-actions,
-#server-rows td > .muted {
-  min-height: 38px;
-}
-
-#server-rows td > .pill,
-#server-rows td > .status-pill,
-#server-rows td > .tag-list,
-#server-rows td > .row-actions,
-#server-rows td > .muted {
+.cell-center {
   display: flex;
   align-items: center;
+  min-height: 44px;
+}
+
+.cell-center > .node-name,
+.cell-center > .stack {
+  min-height: 44px;
+}
+
+.cell-center > .pill,
+.cell-center > .status-pill,
+.cell-center > .tag-list,
+.cell-center > .row-actions,
+.cell-center > .muted {
+  min-height: 28px;
 }
 
 .node-name,
@@ -661,23 +663,15 @@ button.has-icon {
 }
 
 .front-page-button {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #ffffff;
-}
-
-:root.dark .front-page-button {
-  color: #052e16;
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--line-strong));
+  background: var(--panel-solid);
+  color: var(--accent);
 }
 
 .front-page-button:hover {
-  border-color: var(--accent-strong);
-  background: var(--accent-strong);
-  color: #ffffff;
-}
-
-:root.dark .front-page-button:hover {
-  color: #052e16;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .user-menu {
