@@ -381,6 +381,7 @@
       deleted_access_keys: state.settings.deleted_access_keys || [],
       notification_groups: [],
       alert_rules: state.settings.alert_rules || [],
+      admin_path: state.settings.admin_path || "/admin",
       access_base_url: state.settings.access_base_url || "",
       agent_base_url: state.settings.agent_base_url || "",
       expire_notify: state.settings.expire_notify,
@@ -737,6 +738,33 @@
       url = url.slice(0, -"/report".length);
     }
     return url;
+  }
+
+  function normalizeAdminPath(value) {
+    const trimmed = String(value || "").trim().replace(/\/+$/, "").trim();
+    if (!trimmed) {
+      return "/admin";
+    }
+    return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  }
+
+  function validateAdminPath(path) {
+    const input = $("#admin-path");
+    input.setCustomValidity("");
+    if (!/^\/[A-Za-z0-9_-]+$/.test(path)) {
+      input.setCustomValidity("后台入口只能是一段路径，可包含字母、数字、横线和下划线，例如 /panel_2026");
+      return false;
+    }
+    if (path.length > 64) {
+      input.setCustomValidity("后台入口路径不能超过 64 个字符");
+      return false;
+    }
+    const segment = path.slice(1);
+    if (["api", "static", "report", "json", "detail", "map", "i"].includes(segment)) {
+      input.setCustomValidity("后台入口路径与系统路径冲突，请换一个名称");
+      return false;
+    }
+    return true;
   }
 
   function labelsToMap(labels) {
@@ -1187,6 +1215,7 @@
     const expireNotify = state.settings?.expire_notify || state.config?.expire_notify || {};
     $("#access-base-url").value = state.settings?.access_base_url || "";
     $("#agent-base-url").value = state.settings?.agent_base_url || "";
+    $("#admin-path").value = state.settings?.admin_path || "/admin";
     $("#expire-enabled").checked = Boolean(expireNotify.enabled);
     $("#expire-days").value = (expireNotify.days || [30, 14, 7, 3, 1, 0]).join(",");
     $("#expire-interval").value = expireNotify.interval || 86400;
@@ -1195,6 +1224,7 @@
     renderDeletedHosts();
     resetLocalBaseline("access", "");
     resetLocalBaseline("expire", "");
+    updateAccountSaveButton("");
   }
 
   function renderDeletedHosts() {
@@ -2204,6 +2234,20 @@
     };
   }
 
+  function collectAdminPathSettings(silent = false) {
+    const input = $("#admin-path");
+    const adminPath = normalizeAdminPath(input.value);
+    if (!validateAdminPath(adminPath)) {
+      if (!silent) {
+        input.reportValidity();
+      }
+      throw new Error(input.validationMessage || "后台入口路径格式无效");
+    }
+    return {
+      admin_path: adminPath,
+    };
+  }
+
   function collectExpireNotifySettings(silent = false) {
     const daysInput = $("#expire-days");
     const intervalInput = $("#expire-interval");
@@ -2410,14 +2454,54 @@
     return /^[A-Za-z0-9_.@-]{1,64}$/.test(username);
   }
 
+  function savedAdminUsername() {
+    return state.config?.admin?.username || "admin";
+  }
+
+  function savedAdminPath() {
+    return state.settings?.admin_path || "/admin";
+  }
+
+  function accountSettingsChanged() {
+    const usernameChanged = $("#admin-username").value.trim() !== savedAdminUsername();
+    const passwordChanged = Boolean($("#admin-new-password").value || $("#admin-new-password-confirm").value);
+    let adminPathChanged = false;
+    try {
+      adminPathChanged = collectAdminPathSettings(true).admin_path !== savedAdminPath();
+    } catch (_) {
+      adminPathChanged = true;
+    }
+    return usernameChanged || passwordChanged || adminPathChanged;
+  }
+
+  function updateAccountSaveButton(message) {
+    const button = $("#password-submit");
+    if (button) {
+      button.disabled = !accountSettingsChanged();
+    }
+    if (message !== undefined) {
+      text("#password-message", message);
+    }
+  }
+
   async function changeAdminPassword(event) {
     event.preventDefault();
-    const savedUsername = state.config?.admin?.username || "admin";
+    let adminPath;
+    try {
+      adminPath = collectAdminPathSettings();
+    } catch (err) {
+      text("#password-message", err.message);
+      showToast(err.message, "warn");
+      updateAccountSaveButton(err.message);
+      return;
+    }
+    const savedUsername = savedAdminUsername();
     const username = $("#admin-username").value.trim();
     const currentPassword = $("#admin-current-password").value;
     const newPassword = $("#admin-new-password").value;
     const confirmPassword = $("#admin-new-password-confirm").value;
     const wantsPasswordChange = Boolean(newPassword || confirmPassword);
+    const adminPathChanged = adminPath.admin_path !== savedAdminPath();
     if (!username || !currentPassword) {
       text("#password-message", "请填写用户名和当前密码");
       return;
@@ -2426,8 +2510,9 @@
       text("#password-message", "用户名只能包含字母、数字、_、-、.、@，最长 64 字节");
       return;
     }
-    if (!wantsPasswordChange && username === savedUsername) {
+    if (!wantsPasswordChange && username === savedUsername && !adminPathChanged) {
       text("#password-message", "没有需要保存的账号更改");
+      updateAccountSaveButton("没有需要保存的账号更改");
       return;
     }
     if (wantsPasswordChange) {
@@ -2453,6 +2538,7 @@
     }
     $("#password-submit").disabled = true;
     text("#password-message", "保存中...");
+    let saved = false;
     try {
       const response = await fetch("/api/admin/password", {
         method: "POST",
@@ -2461,9 +2547,14 @@
           username,
           current_password: currentPassword,
           new_password: wantsPasswordChange ? newPassword : "",
+          admin_path: adminPath.admin_path,
         }),
       });
       await readJson(response);
+      saved = true;
+      if (window.location.pathname !== adminPath.admin_path) {
+        window.history.replaceState(null, "", adminPath.admin_path);
+      }
       $("#password-form").reset();
       clearSession();
       markPristine("");
@@ -2477,8 +2568,11 @@
         text("#login-message", "登录已过期，请重新登录");
       }
       text("#password-message", `修改失败: ${err.message}`);
+      updateAccountSaveButton(`修改失败: ${err.message}`);
     } finally {
-      $("#password-submit").disabled = false;
+      if (!saved) {
+        updateAccountSaveButton();
+      }
     }
   }
 
@@ -2578,10 +2672,14 @@
     if (!target.closest(".content")) {
       return;
     }
-    if (target.closest("#password-form") || target.closest("#editor")) {
+    if (!["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) {
       return;
     }
-    if (!["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) {
+    if (target.closest("#password-form")) {
+      updateAccountSaveButton("");
+      return;
+    }
+    if (target.closest("#editor")) {
       return;
     }
     if (target instanceof HTMLInputElement && target.classList.contains("secret-input")) {

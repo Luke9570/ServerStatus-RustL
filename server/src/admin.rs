@@ -26,6 +26,8 @@ const ADMIN_PASSWORD_HASH_BYTES: usize = 32;
 const MIN_ADMIN_PASSWORD_LEN: usize = 12;
 const MAX_ADMIN_PASSWORD_LEN: usize = 256;
 const MAX_ADMIN_USERNAME_LEN: usize = 64;
+pub const DEFAULT_ADMIN_PATH: &str = "/admin";
+const MAX_ADMIN_PATH_LEN: usize = 64;
 const INSTALL_TOKEN_TTL_SECONDS: u64 = 24 * 3600;
 
 static ADMIN_STATE: OnceCell<AdminState> = OnceCell::new();
@@ -238,6 +240,8 @@ pub struct AdminData {
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub admin_session_version: u64,
     #[serde(default)]
+    pub admin_path: String,
+    #[serde(default)]
     pub hosts: HashMap<String, NodeOverride>,
     #[serde(default)]
     pub groups: HashMap<String, NodeOverride>,
@@ -273,6 +277,9 @@ pub fn init() -> Result<()> {
         .and_then(|contents| serde_json::from_str::<AdminData>(&contents).ok())
         .unwrap_or_default();
     normalize_admin_data(&mut data);
+    if validate_admin_path(&data.admin_path).is_err() {
+        data.admin_path = DEFAULT_ADMIN_PATH.to_string();
+    }
     let _ = ADMIN_STATE.set(AdminState {
         path: SETTINGS_PATH.to_string(),
         data: Mutex::new(data),
@@ -298,6 +305,7 @@ pub fn replace(data: AdminData) -> Result<AdminData> {
     let mut data = data;
     merge_sensitive_fields(&mut data, &current);
     normalize_admin_data(&mut data);
+    validate_admin_path(&data.admin_path).map_err(|err| anyhow::anyhow!("{err}"))?;
     data.access_base_url = data.access_base_url.trim().trim_end_matches('/').to_string();
     data.agent_base_url = data.agent_base_url.trim().trim_end_matches('/').to_string();
     write_data(state, data)
@@ -330,6 +338,9 @@ fn write_settings_file(path: &str, contents: &str) -> Result<()> {
 
 pub fn public_snapshot() -> AdminData {
     let mut data = snapshot();
+    if validate_admin_path(&data.admin_path).is_err() {
+        data.admin_path = DEFAULT_ADMIN_PATH.to_string();
+    }
     data.admin_password_hash = None;
     data.admin_session_version = 0;
     for access_key in data.access_keys.values_mut() {
@@ -480,6 +491,21 @@ pub fn admin_session_version() -> u64 {
     snapshot().admin_session_version
 }
 
+pub fn effective_admin_path() -> String {
+    let path = snapshot().admin_path;
+    if validate_admin_path(&path).is_ok() {
+        path
+    } else {
+        DEFAULT_ADMIN_PATH.to_string()
+    }
+}
+
+pub fn request_matches_admin_path(path: &str) -> bool {
+    let trimmed = path.trim_end_matches('/');
+    let normalized = if trimmed.is_empty() { "/" } else { trimmed };
+    normalized == effective_admin_path()
+}
+
 pub fn admin_password_override_configured() -> bool {
     snapshot()
         .admin_password_hash
@@ -490,6 +516,7 @@ pub fn admin_password_override_configured() -> bool {
 #[derive(Debug)]
 pub enum PasswordUpdateError {
     InvalidUsername,
+    InvalidAdminPath,
     WrongCurrentPassword,
     NewPasswordTooShort,
     NewPasswordTooLong,
@@ -505,26 +532,59 @@ pub fn update_admin_credentials(
     current_password: &str,
     new_username: Option<&str>,
     new_password: Option<&str>,
+    new_admin_path: Option<&str>,
 ) -> std::result::Result<(), PasswordUpdateError> {
     let state = ADMIN_STATE.get().expect("admin state not initialized");
     let mut data = state.data.lock().unwrap().clone();
+    let changed = apply_admin_credentials_update(
+        &mut data,
+        base_user,
+        base,
+        current_password,
+        new_username,
+        new_password,
+        new_admin_path,
+    )?;
+    if !changed {
+        return Err(PasswordUpdateError::NothingChanged);
+    }
+    normalize_admin_data(&mut data);
+    data.admin_session_version = data.admin_session_version.saturating_add(1);
+    write_data(state, data)
+        .map(|_| ())
+        .map_err(|_| PasswordUpdateError::SaveFailed)
+}
+
+fn apply_admin_credentials_update(
+    data: &mut AdminData,
+    base_user: Option<&str>,
+    base: Option<&str>,
+    current_password: &str,
+    new_username: Option<&str>,
+    new_password: Option<&str>,
+    new_admin_path: Option<&str>,
+) -> std::result::Result<bool, PasswordUpdateError> {
     if !admin_password_matches_from_data(&data, base, current_password) {
         return Err(PasswordUpdateError::WrongCurrentPassword);
     }
 
-    let current_user = effective_admin_user_from_data(&data, base_user).unwrap_or_else(|| "admin".to_string());
+    let current_user = effective_admin_user_from_data(data, base_user).unwrap_or_else(|| "admin".to_string());
     let next_user = new_username
         .map(str::trim)
         .filter(|user| !user.is_empty())
         .unwrap_or(current_user.as_str());
     validate_admin_username(next_user)?;
 
+    let current_admin_path = normalize_admin_path_value(&data.admin_path);
+    let next_admin_path = new_admin_path
+        .map(normalize_admin_path_value)
+        .unwrap_or_else(|| current_admin_path.clone());
+    validate_admin_path(&next_admin_path).map_err(|_| PasswordUpdateError::InvalidAdminPath)?;
+
     let next_password = new_password.map(str::trim).filter(|password| !password.is_empty());
     let user_changed = next_user != current_user;
     let password_changed = next_password.is_some();
-    if !user_changed && !password_changed {
-        return Err(PasswordUpdateError::NothingChanged);
-    }
+    let admin_path_changed = next_admin_path != current_admin_path;
     if let Some(next_password) = next_password {
         validate_new_admin_password(current_password, next_password)?;
         let hash = hash_admin_password(next_password).map_err(|_| PasswordUpdateError::HashFailed)?;
@@ -533,11 +593,10 @@ pub fn update_admin_credentials(
     if user_changed {
         data.admin_user = Some(next_user.to_string());
     }
-    normalize_admin_data(&mut data);
-    data.admin_session_version = data.admin_session_version.saturating_add(1);
-    write_data(state, data)
-        .map(|_| ())
-        .map_err(|_| PasswordUpdateError::SaveFailed)
+    if admin_path_changed {
+        data.admin_path = next_admin_path;
+    }
+    Ok(user_changed || password_changed || admin_path_changed)
 }
 
 pub fn apply_host_override(host: &mut Host) {
@@ -853,6 +912,7 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
 
 fn normalize_admin_data(data: &mut AdminData) {
     normalize_optional_string(&mut data.admin_user);
+    data.admin_path = normalize_admin_path_value(&data.admin_path);
     if let Some(tgbot) = &mut data.tgbot {
         normalize_tgbot_override(tgbot);
     }
@@ -1017,6 +1077,47 @@ fn normalize_optional_string(value: &mut Option<String>) {
             *value = Some(trimmed);
         }
     }
+}
+
+fn normalize_admin_path_value(path: &str) -> String {
+    let trimmed = path.trim().trim_end_matches('/').trim();
+    if trimmed.is_empty() {
+        return DEFAULT_ADMIN_PATH.to_string();
+    }
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+pub fn validate_admin_path(path: &str) -> std::result::Result<(), &'static str> {
+    let path = path.trim();
+    if path.is_empty() || path == "/" {
+        return Err("后台入口路径不能为空");
+    }
+    if path.len() > MAX_ADMIN_PATH_LEN {
+        return Err("后台入口路径不能超过 64 个字符");
+    }
+    let Some(segment) = path.strip_prefix('/') else {
+        return Err("后台入口路径必须以 / 开头");
+    };
+    if segment.is_empty() || segment.contains('/') {
+        return Err("后台入口路径只能是一段路径");
+    }
+    if !segment
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err("后台入口路径只能包含字母、数字、横线和下划线");
+    }
+    if matches!(
+        segment,
+        "api" | "static" | "report" | "json" | "detail" | "map" | "i" | "admin.html" | "index.html"
+    ) {
+        return Err("后台入口路径与系统路径冲突");
+    }
+    Ok(())
 }
 
 fn set_label_value(labels: &str, key: &str, value: &str) -> String {
@@ -1229,6 +1330,75 @@ mod tests {
         assert!(validate_admin_username("bad:name").is_err());
         assert!(validate_admin_username("bad name").is_err());
         assert!(validate_admin_username("a".repeat(MAX_ADMIN_USERNAME_LEN + 1).as_str()).is_err());
+    }
+
+    #[test]
+    fn normalizes_admin_path_to_default_or_single_segment() {
+        let mut default_data = AdminData::default();
+        normalize_admin_data(&mut default_data);
+        assert_eq!(default_data.admin_path, "/admin");
+
+        let mut custom_data = AdminData {
+            admin_path: " panel_2026 ".to_string(),
+            ..Default::default()
+        };
+        normalize_admin_data(&mut custom_data);
+        assert_eq!(custom_data.admin_path, "/panel_2026");
+    }
+
+    #[test]
+    fn validates_admin_path_reserved_and_unsafe_values() {
+        assert!(validate_admin_path("/panel_2026").is_ok());
+        assert!(validate_admin_path("/admin-88").is_ok());
+        assert!(validate_admin_path("").is_err());
+        assert!(validate_admin_path("/api").is_err());
+        assert!(validate_admin_path("/static").is_err());
+        assert!(validate_admin_path("/report").is_err());
+        assert!(validate_admin_path("/nested/path").is_err());
+        assert!(validate_admin_path("../admin").is_err());
+        assert!(validate_admin_path("/bad path").is_err());
+    }
+
+    #[test]
+    fn account_update_can_change_admin_path_without_password_change() {
+        let mut data = AdminData {
+            admin_path: DEFAULT_ADMIN_PATH.to_string(),
+            ..Default::default()
+        };
+
+        let changed = apply_admin_credentials_update(
+            &mut data,
+            Some("admin"),
+            Some("current-password"),
+            "current-password",
+            Some("admin"),
+            None,
+            Some(" panel_preview "),
+        )
+        .unwrap();
+
+        assert!(changed);
+        assert_eq!(data.admin_path, "/panel_preview");
+        assert!(data.admin_user.is_none());
+        assert!(data.admin_password_hash.is_none());
+    }
+
+    #[test]
+    fn account_update_rejects_invalid_admin_path() {
+        let mut data = AdminData::default();
+
+        let err = apply_admin_credentials_update(
+            &mut data,
+            Some("admin"),
+            Some("current-password"),
+            "current-password",
+            Some("admin"),
+            None,
+            Some("/api"),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, PasswordUpdateError::InvalidAdminPath));
     }
 
     #[test]

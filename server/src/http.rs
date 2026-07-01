@@ -76,14 +76,22 @@ pub async fn save_admin_settings(_claims: jwt::Claims, Json(payload): Json<admin
             "data": admin::public_snapshot(),
         }))
         .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "code": 1,
-                "message": err.to_string(),
-            })),
-        )
-            .into_response(),
+        Err(err) => {
+            let message = err.to_string();
+            let status = if message.starts_with("后台入口路径") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                status,
+                Json(json!({
+                    "code": 1,
+                    "message": message,
+                })),
+            )
+        }
+        .into_response(),
     }
 }
 
@@ -409,6 +417,8 @@ pub struct AdminPasswordPayload {
     username: Option<String>,
     #[serde(default)]
     new_password: Option<String>,
+    #[serde(default)]
+    admin_path: Option<String>,
 }
 
 pub async fn change_admin_password(
@@ -422,6 +432,7 @@ pub async fn change_admin_password(
         &payload.current_password,
         payload.username.as_deref(),
         payload.new_password.as_deref(),
+        payload.admin_path.as_deref(),
     ) {
         Ok(()) => Json(json!({
             "code": 0,
@@ -433,6 +444,10 @@ pub async fn change_admin_password(
                 admin::PasswordUpdateError::InvalidUsername => (
                     StatusCode::BAD_REQUEST,
                     "用户名只能包含字母、数字、下划线、横线、点和 @，最长 64 字节",
+                ),
+                admin::PasswordUpdateError::InvalidAdminPath => (
+                    StatusCode::BAD_REQUEST,
+                    "后台入口只能是一段路径，可包含字母、数字、横线和下划线",
                 ),
                 admin::PasswordUpdateError::WrongCurrentPassword => (StatusCode::BAD_REQUEST, "当前密码不正确"),
                 admin::PasswordUpdateError::NewPasswordTooShort => {

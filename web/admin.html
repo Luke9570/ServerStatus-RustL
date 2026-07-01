@@ -87,7 +87,7 @@
             <button id="add-server-access" class="secondary" type="button">接入服务器</button>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="server-table">
               <thead>
                 <tr>
                   <th>服务器</th>
@@ -281,6 +281,11 @@
               <h2>后台登录</h2>
               <form id="password-form" class="password-change-form" autocomplete="off">
                 <label>
+                  后台入口路径
+                  <input id="admin-path" autocomplete="off" placeholder="/admin">
+                </label>
+                <p class="muted">保存后请使用新的入口访问后台；自定义入口生效后 /admin 将返回 404。</p>
+                <label>
                   用户名
                   <input id="admin-username" autocomplete="username" required>
                 </label>
@@ -296,9 +301,9 @@
                   确认新密码
                   <input id="admin-new-password-confirm" type="password" autocomplete="new-password" minlength="12" maxlength="256" placeholder="留空不修改">
                 </label>
-                <div class="form-actions">
-                  <button id="password-submit" class="secondary" type="submit">保存账号设置</button>
+                <div class="form-actions account-form-actions">
                   <output id="password-message" role="status"></output>
+                  <button id="password-submit" type="submit" disabled>保存</button>
                 </div>
               </form>
               <p class="muted">正式部署请使用 HTTPS；新密码只保存为本地哈希，用户名会写入本地覆盖配置。</p>

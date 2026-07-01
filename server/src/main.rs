@@ -18,8 +18,8 @@ use tokio::runtime::Handle;
 use tokio::signal;
 
 use axum::{
-    http::Uri,
-    response::IntoResponse,
+    http::{StatusCode, Uri},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Router,
 };
@@ -69,7 +69,7 @@ fn create_app_router() -> Router {
         .route("/api/admin/access-command/{gid}", get(http::admin_access_command))
         .route("/api/admin/access-secret/{gid}", get(http::admin_access_secret))
         .route("/api/admin/{path}", get(http::admin_api)) // stats.json || config.json
-        .route("/admin", get(assets::admin_index_handler))
+        .route("/admin", get(admin_index_handler))
         .route("/detail", get(http::get_detail))
         .route("/map", get(http::get_map))
         .route("/i", get(http::init_client))
@@ -77,8 +77,20 @@ fn create_app_router() -> Router {
         .fallback(fallback)
 }
 
-async fn fallback(uri: Uri) -> impl IntoResponse {
-    assets::static_handler(&uri)
+async fn admin_index_handler() -> Response {
+    if admin::request_matches_admin_path(admin::DEFAULT_ADMIN_PATH) {
+        assets::admin_index_handler().await.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+async fn fallback(uri: Uri) -> Response {
+    if admin::request_matches_admin_path(uri.path()) {
+        assets::admin_index_handler().await.into_response()
+    } else {
+        assets::static_handler(&uri).into_response()
+    }
 }
 
 /// Waits for Ctrl-C or SIGTERM to initiate graceful shutdown.
