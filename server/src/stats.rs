@@ -720,7 +720,7 @@ fn infer_host_type(sys_info: Option<&stat_common::server_status::SysInfo>) -> Op
 
     match sys_info.os_arch.trim().to_lowercase().as_str() {
         "aarch64" | "arm64" | "armv7" | "armv6" => Some("arm".to_string()),
-        _ => None,
+        _ => Some("unknown".to_string()),
     }
 }
 
@@ -894,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_x86_type_empty_without_virtualization() {
+    fn falls_back_to_unknown_for_x86_without_virtualization() {
         let mut stat = HostStat {
             sys_info: Some(SysInfo {
                 os_arch: "x86_64".to_string(),
@@ -904,7 +904,7 @@ mod tests {
             ..Default::default()
         };
         fill_auto_location(&mut stat);
-        assert_eq!(stat.host_type, "");
+        assert_eq!(stat.host_type, "unknown");
     }
 
     #[test]
