@@ -387,13 +387,13 @@
     const permanent = configured.filter((server) => isPermanent(server.expire));
     const missing = servers.filter(treatAsMissing);
     const expired = configured.filter((server) => server.expire.status === "expired");
-    const warning = configured.filter(
+    const warning = dueServers.filter(
       (server) =>
         !autoRenewalHealthy(server.expire) &&
         server.expire.days_left >= 0 &&
         server.expire.days_left <= 7,
     );
-    const soon = configured.filter(
+    const soon = dueServers.filter(
       (server) =>
         !autoRenewalHealthy(server.expire) &&
         server.expire.days_left > 7 &&
