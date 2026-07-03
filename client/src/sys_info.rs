@@ -305,6 +305,7 @@ fn detect_virtualization() -> String {
     detect_systemd_virt()
         .or_else(detect_container_virt)
         .or_else(detect_dmi_virt)
+        .or_else(detect_cpuid_virt)
         .or_else(detect_hypervisor_type)
         .unwrap_or_default()
 }
@@ -384,15 +385,41 @@ fn detect_hypervisor_type() -> Option<String> {
     normalize_virtualization(value.trim())
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn detect_cpuid_virt() -> Option<String> {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::__cpuid;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::__cpuid;
+
+    let features = unsafe { __cpuid(1) };
+    if features.ecx & (1 << 31) == 0 {
+        return None;
+    }
+
+    let hypervisor = unsafe { __cpuid(0x4000_0000) };
+    let mut vendor = Vec::with_capacity(12);
+    vendor.extend_from_slice(&hypervisor.ebx.to_le_bytes());
+    vendor.extend_from_slice(&hypervisor.ecx.to_le_bytes());
+    vendor.extend_from_slice(&hypervisor.edx.to_le_bytes());
+    let vendor = String::from_utf8_lossy(&vendor);
+    normalize_virtualization(&vendor).or_else(|| Some("kvm".to_string()))
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn detect_cpuid_virt() -> Option<String> {
+    None
+}
+
 fn normalize_virtualization(value: &str) -> Option<String> {
-    let value = value.trim().to_lowercase();
+    let value = value.trim_matches('\0').trim().to_lowercase();
     if value.is_empty() || value == "none" {
         return None;
     }
     let normalized = match value.as_str() {
         "x86_64" | "x86-64" | "amd64" | "aarch64" | "arm64" | "armv7" | "armv6" => return None,
-        "qemu" | "bochs" => "kvm",
-        "microsoft" => "hyperv",
+        "qemu" | "bochs" | "kvmkvmkvm" => "kvm",
+        "microsoft" | "microsoft hv" => "hyperv",
         "oracle" => "virtualbox",
         "wsl" => "wsl",
         other => other,
@@ -689,6 +716,8 @@ mod tests {
     fn normalizes_qemu_to_kvm_for_panel_type() {
         assert_eq!(normalize_virtualization("qemu"), Some("kvm".to_string()));
         assert_eq!(normalize_virtualization("QEMU"), Some("kvm".to_string()));
+        assert_eq!(normalize_virtualization("KVMKVMKVM\0\0\0"), Some("kvm".to_string()));
+        assert_eq!(normalize_virtualization("Microsoft Hv"), Some("hyperv".to_string()));
     }
 
     #[test]
