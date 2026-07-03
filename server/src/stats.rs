@@ -712,11 +712,16 @@ fn fill_auto_location(stat: &mut HostStat) {
 }
 
 fn infer_host_type(sys_info: Option<&stat_common::server_status::SysInfo>) -> Option<String> {
-    let virtualization = sys_info?.virtualization.trim().to_lowercase();
-    if virtualization.is_empty() {
-        return None;
+    let sys_info = sys_info?;
+    let virtualization = sys_info.virtualization.trim().to_lowercase();
+    if !virtualization.is_empty() {
+        return Some(virtualization);
     }
-    Some(virtualization)
+
+    match sys_info.os_arch.trim().to_lowercase().as_str() {
+        "aarch64" | "arm64" | "armv7" | "armv6" => Some("arm".to_string()),
+        _ => None,
+    }
 }
 
 fn infer_location_code(ip_info: Option<&stat_common::server_status::IpInfo>) -> Option<String> {
@@ -902,6 +907,19 @@ mod tests {
     }
 
     #[test]
+    fn falls_back_to_arm_arch_as_host_type() {
+        let mut stat = HostStat {
+            sys_info: Some(SysInfo {
+                os_arch: "aarch64".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        fill_auto_location(&mut stat);
+        assert_eq!(stat.host_type, "arm");
+    }
+
+    #[test]
     fn keeps_manual_location_and_type() {
         let mut stat = HostStat {
             location: "jp".to_string(),
@@ -942,9 +960,15 @@ mod tests {
             expire_notify: true,
         };
 
-        assert!(assign_default_group_for_new_host(&mut stat, &mut hosts_map, Some(group)));
+        assert!(assign_default_group_for_new_host(
+            &mut stat,
+            &mut hosts_map,
+            Some(group)
+        ));
 
-        let host = hosts_map.get("srv-auto").expect("host should be created from default group");
+        let host = hosts_map
+            .get("srv-auto")
+            .expect("host should be created from default group");
         assert_eq!(stat.gid, "default");
         assert_eq!(host.gid, "default");
         assert_eq!(host.location, "hk");

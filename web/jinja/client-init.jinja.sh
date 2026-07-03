@@ -155,7 +155,8 @@ function install_client_service() {
     cat > /etc/systemd/system/stat_client.service <<-'EOF'
 [Unit]
 Description=ServerStatus-RustL Telemetry Agent
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 User=root

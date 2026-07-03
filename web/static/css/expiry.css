@@ -340,6 +340,27 @@
   text-align: center;
 }
 
+#ssr-table th,
+#ssr-table td {
+  vertical-align: middle;
+}
+
+#ssr-table th:nth-child(5),
+#ssr-table td:nth-child(5) {
+  width: 5.5rem !important;
+  min-width: 5.5rem !important;
+  padding-right: 0.5rem;
+  padding-left: 0.5rem;
+  text-align: center;
+}
+
+@media (min-width: 900px) and (max-width: 1023px) {
+  #ssr-table th:nth-child(5),
+  #ssr-table td:nth-child(5) {
+    display: table-cell !important;
+  }
+}
+
 #ssr-table th:first-child {
   padding-left: 11px;
 }

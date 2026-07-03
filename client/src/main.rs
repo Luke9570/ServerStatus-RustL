@@ -11,7 +11,7 @@ use std::process;
 use std::sync::Mutex;
 use std::thread;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time;
 
@@ -27,6 +27,7 @@ mod vnstat;
 static CU: &str = "cu.tz.cloudcpp.com:80";
 static CT: &str = "ct.tz.cloudcpp.com:80";
 static CM: &str = "cm.tz.cloudcpp.com:80";
+pub(crate) const NETWORK_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub struct ClientConfig {
@@ -217,6 +218,33 @@ fn sample_all(args: &Args, stat_base: &StatRequest) -> StatRequest {
     stat_rt
 }
 
+fn refresh_auto_network_status<F>(online_mode: u8, stat_base: &mut StatRequest, probe: F) -> bool
+where
+    F: FnOnce() -> (bool, bool),
+{
+    if online_mode != 0 {
+        return false;
+    }
+
+    let before = (stat_base.online4, stat_base.online6);
+    let (ipv4, ipv6) = probe();
+    stat_base.online4 = ipv4;
+    stat_base.online6 = ipv6;
+
+    before != (ipv4, ipv6)
+}
+
+pub(crate) fn refresh_network_status_if_due(args: &Args, stat_base: &mut StatRequest, next_refresh: &mut Instant) {
+    if args.online != 0 || Instant::now() < *next_refresh {
+        return;
+    }
+
+    let (ipv4, ipv6) = status::get_network(args);
+    eprintln!("refresh_network (ipv4, ipv6) => ({ipv4}, {ipv6})");
+    refresh_auto_network_status(args.online, stat_base, || (ipv4, ipv6));
+    *next_refresh = Instant::now() + NETWORK_REFRESH_INTERVAL;
+}
+
 fn http_report(args: &Args, stat_base: &mut StatRequest) -> Result<()> {
     let mut domain = args.addr.split('/').collect::<Vec<&str>>()[2].to_owned();
     if !domain.contains(':') {
@@ -265,7 +293,9 @@ fn http_report(args: &Args, stat_base: &mut StatRequest) -> Result<()> {
     }
 
     let http_client = http_client_builder.build()?;
+    let mut next_network_refresh = Instant::now() + NETWORK_REFRESH_INTERVAL;
     loop {
+        refresh_network_status_if_due(args, stat_base, &mut next_network_refresh);
         let stat_rt = sample_all(args, stat_base);
 
         let body_data: Option<Vec<u8>>;
@@ -452,4 +482,39 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_online_mode_refreshes_network_status() {
+        let mut stat_base = StatRequest {
+            online4: true,
+            online6: false,
+            ..Default::default()
+        };
+
+        let changed = refresh_auto_network_status(0, &mut stat_base, || (true, true));
+
+        assert!(changed);
+        assert!(stat_base.online4);
+        assert!(stat_base.online6);
+    }
+
+    #[test]
+    fn manual_online_mode_is_not_overwritten_by_refresh() {
+        let mut stat_base = StatRequest {
+            online4: true,
+            online6: false,
+            ..Default::default()
+        };
+
+        let changed = refresh_auto_network_status(1, &mut stat_base, || (true, true));
+
+        assert!(!changed);
+        assert!(stat_base.online4);
+        assert!(!stat_base.online6);
+    }
 }

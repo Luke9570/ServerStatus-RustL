@@ -1,12 +1,13 @@
 // #![allow(unused)]
 use std::str::FromStr;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tonic::{metadata::MetadataValue, Request};
 use tower::timeout::Timeout;
 use url::Url;
 
+use crate::refresh_network_status_if_due;
 use crate::sample_all;
 use crate::Args;
 use stat_common::server_status::server_status_client::ServerStatusClient;
@@ -64,7 +65,9 @@ pub async fn report(args: &Args, stat_base: &mut StatRequest) -> anyhow::Result<
         Ok(req)
     });
 
+    let mut next_network_refresh = Instant::now() + crate::NETWORK_REFRESH_INTERVAL;
     loop {
+        refresh_network_status_if_due(args, stat_base, &mut next_network_refresh);
         let stat_rt = sample_all(args, stat_base);
         let mut client = grpc_client.clone();
 
