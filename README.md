@@ -204,7 +204,7 @@ client-aarch64-unknown-linux-musl.zip
 
 ```bash
 SSR_RELEASE_REPO=Luke9570/ServerStatus-RustL \
-SSR_RELEASE_TAG=v1.8.2 \
+SSR_RELEASE_TAG=v1.8.3 \
 curl -fsSL "https://example.com/i?..." | bash
 ```
 
