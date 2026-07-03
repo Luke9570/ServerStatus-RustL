@@ -65,8 +65,8 @@ fn create_app_router() -> Router {
         .route("/api/admin/password", post(http::change_admin_password))
         .route("/api/admin/deleted-hosts", delete(http::clear_deleted_hosts))
         .route("/api/admin/deleted-hosts/{name}", delete(http::purge_deleted_host))
-        .route("/api/admin/access-command", get(http::admin_default_access_command))
-        .route("/api/admin/access-command/{gid}", get(http::admin_access_command))
+        .route("/api/admin/access-command", post(http::admin_default_access_command))
+        .route("/api/admin/access-command/{gid}", post(http::admin_access_command))
         .route("/api/admin/access-secret/{gid}", get(http::admin_access_secret))
         .route("/api/admin/{path}", get(http::admin_api)) // stats.json || config.json
         .route("/admin", get(admin_index_handler))

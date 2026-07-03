@@ -338,15 +338,15 @@ function get_status() {
 
     # 判断为空或者 "-a" "--all"，为空可以兼容前面的函数功能
     if [ -z "$1" ] || [ "$1" = "-a" ] || [ "$1" = "--all" ]; then
-        wget --no-check-certificate -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
-        wget --no-check-certificate -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
+        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
+        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
         unzip -o server-${arch}-unknown-linux-musl.zip
         unzip -o client-${arch}-unknown-linux-musl.zip
     elif [ "$1" = "-s" ] || [ "$1" = "--server" ]; then
-        wget --no-check-certificate -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
+        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
         unzip -o server-${arch}-unknown-linux-musl.zip
     elif [ "$1" = "-c" ] || [ "$1" = "--client" ]; then
-        wget --no-check-certificate -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
+        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
         unzip -o client-${arch}-unknown-linux-musl.zip
     else
         echo "无效的参数"

@@ -119,6 +119,21 @@
     return settings;
   }
 
+  function snapshotSettingsState() {
+    return {
+      settings: JSON.parse(JSON.stringify(state.settings || {})),
+      deletedHosts: new Set(state.deletedHosts || []),
+      deletedAccessKeys: new Set(state.deletedAccessKeys || []),
+    };
+  }
+
+  function restoreSettingsState(snapshot) {
+    state.settings = JSON.parse(JSON.stringify(snapshot.settings || {}));
+    state.deletedHosts = new Set(snapshot.deletedHosts || []);
+    state.deletedAccessKeys = new Set(snapshot.deletedAccessKeys || []);
+    ensureSettings();
+  }
+
   function text(target, content) {
     const element = typeof target === "string" ? $(target) : target;
     if (element) {
@@ -197,6 +212,22 @@
         toast.textContent = "";
       }, tone === "warn" ? 4600 : 3200),
     );
+  }
+
+  function formatShortDuration(seconds) {
+    const value = Number(seconds || 0);
+    if (!Number.isFinite(value) || value <= 0) {
+      return "短时间";
+    }
+    if (value < 60) {
+      return `${Math.round(value)} 秒`;
+    }
+    const minutes = Math.round(value / 60);
+    if (minutes < 60) {
+      return `${minutes} 分钟`;
+    }
+    const hours = Math.round(minutes / 60);
+    return `${hours} 小时`;
   }
 
   function setButtonBusy(button, busy, busyText = "保存中...") {
@@ -474,6 +505,15 @@
     return readJson(response);
   }
 
+  async function postJson(url) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: authHeaders(false),
+      cache: "no-store",
+    });
+    return readJson(response);
+  }
+
   async function deleteJson(url) {
     const response = await fetch(url, {
       method: "DELETE",
@@ -594,6 +634,7 @@
       ],
       copy: ["M8 8h10v10H8Z", "M6 14H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1"],
       trash: ["M3 6h18", "M8 6V4h8v2", "M6 6l1 14h10l1-14", "M10 11v6", "M14 11v6"],
+      terminal: ["M4 5h16v14H4Z", "M7 9l3 3-3 3", "M12 15h5"],
       sun: ["M12 4V2", "M12 22v-2", "M4.93 4.93 3.52 3.52", "M20.48 20.48l-1.41-1.41", "M4 12H2", "M22 12h-2", "M4.93 19.07l-1.41 1.41", "M20.48 3.52l-1.41 1.41", "M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"],
       moon: ["M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"],
       monitor: ["M4 5h16v11H4Z", "M9 21h6", "M12 16v5"],
@@ -954,10 +995,16 @@
     return [...groups.values()];
   }
 
-  function serverGroupsForServer(id) {
-    return serverGroups()
+  function serverGroupsForServer(id, gid = "") {
+    const groups = serverGroups();
+    const direct = groups
       .filter((group) => (group.servers || []).includes(id))
       .map((group) => group.name || group.id);
+    if (direct.length || gid !== "default") {
+      return direct;
+    }
+    const defaultGroup = groups.find((group) => group.id === "default" || group.name === "default");
+    return defaultGroup ? [defaultGroup.name || defaultGroup.id] : direct;
   }
 
   function serverItems(includeRuntimeGroups = true) {
@@ -978,16 +1025,33 @@
         });
       }
     }
+    Object.entries(state.settings.hosts || {}).forEach(([id, override]) => {
+      if (!configHosts.has(id)) {
+        configHosts.set(id, {
+          name: id,
+          alias: override.alias || id,
+          labels: "",
+          weight: override.weight || "",
+          expire: override.expire || override.billing?.end_date || "",
+          expire_notify: override.expire_notify,
+          billing: override.billing || {},
+        });
+      }
+    });
 
-    return [...configHosts.values()].filter((host) => !deletedHosts.has(host.name)).map((host) => {
+    return [...configHosts.values()].filter((host) => {
+      const stat = stats.find((server) => server.name === host.name);
+      return Boolean(stat) || !deletedHosts.has(host.name);
+    }).map((host) => {
       const stat = stats.find((server) => server.name === host.name);
       const override = state.settings.hosts?.[host.name] || {};
       const labels = host.labels || stat?.labels || "";
-      const groups = includeRuntimeGroups ? serverGroupsForServer(host.name) : [];
+      const gid = host.gid || stat?.gid || "";
+      const groups = includeRuntimeGroups ? serverGroupsForServer(host.name, gid) : [];
       return {
         id: host.name,
         alias: override.alias ?? host.alias ?? stat?.alias ?? host.name,
-        gid: host.gid || stat?.gid || "",
+        gid,
         stat,
         labels,
         groups,
@@ -1099,6 +1163,12 @@
     const edit = actionButton("编辑", "secondary compact-action");
     edit.addEventListener("click", () => openServerEditor(item.id));
     actionWrap.append(edit);
+    const duplicate = iconButton("复制服务器配置", "copy");
+    duplicate.addEventListener("click", () => duplicateServer(item, row, duplicate));
+    actionWrap.append(duplicate);
+    const access = iconButton("复制接入指令", "terminal");
+    access.addEventListener("click", () => openServerAccessCommandEditor(item, row));
+    actionWrap.append(access);
     const remove = iconButton(online ? "停止 Agent 或离线后删除" : "删除服务器", "trash");
     remove.classList.add("danger-icon");
     remove.addEventListener("click", () => deleteServer(item, row));
@@ -1232,7 +1302,8 @@
     if (!wrap) {
       return;
     }
-    const ids = [...state.deletedHosts].sort((a, b) => a.localeCompare(b));
+    const activeIds = new Set((state.stats?.servers || []).map((server) => server.name));
+    const ids = [...state.deletedHosts].filter((id) => !activeIds.has(id)).sort((a, b) => a.localeCompare(b));
     if (!ids.length) {
       wrap.replaceChildren(el("span", "muted", "没有已删除服务器"));
       return;
@@ -1388,6 +1459,69 @@
     }
   }
 
+  function nextServerId(sourceId = "srv") {
+    const used = new Set(serverItems(false).map((server) => server.id));
+    Object.keys(state.settings.hosts || {}).forEach((id) => used.add(id));
+    let base = String(sourceId || "srv")
+      .trim()
+      .replace(/[^A-Za-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (!base) {
+      base = "srv";
+    }
+    let index = 1;
+    let id = `${base}-copy`;
+    while (used.has(id)) {
+      index += 1;
+      id = `${base}-copy-${index}`;
+    }
+    return id;
+  }
+
+  async function duplicateServer(item, row, button) {
+    ensureSettings();
+    const snapshot = snapshotSettingsState();
+    const id = nextServerId(item.id);
+    const billing = {
+      end_date: item.billing?.end_date || "",
+      auto_renewal: item.billing?.auto_renewal || "0",
+      cycle: item.billing?.cycle || "",
+      amount: item.billing?.amount || "",
+    };
+    state.settings.hosts[id] = {
+      alias: item.alias || "",
+      note: item.note || "",
+      public_note: item.public_note || "",
+      spec: item.spec || "",
+      expire: billing.end_date || "",
+      billing,
+      expire_notify: item.expire_notify !== false,
+      weight: Number(item.weight || 0),
+    };
+    state.deletedHosts.delete(id);
+    state.settings.deleted_hosts = [...state.deletedHosts];
+    state.settings.server_groups = serverGroups().map((group) => {
+      const servers = new Set(group.servers || []);
+      if (servers.has(item.id) || (item.gid === "default" && (group.id === "default" || group.name === "default"))) {
+        servers.add(id);
+      }
+      return { ...group, servers: [...servers] };
+    });
+    rowMessage(row, "复制中...");
+    button.disabled = true;
+    const ok = await saveSettingsPayload(settingsPayloadFromState(), {
+      successMessage: `${id} 已复制并同步到后端`,
+      render: "tables",
+    });
+    if (!ok) {
+      restoreSettingsState(snapshot);
+      renderTables();
+      if (button.isConnected) {
+        button.disabled = false;
+      }
+    }
+  }
+
   async function deleteServer(item, row) {
     const online = Boolean(item.stat?.online4 || item.stat?.online6);
     if (online) {
@@ -1395,6 +1529,7 @@
       return;
     }
     ensureSettings();
+    const snapshot = snapshotSettingsState();
     state.deletedHosts.add(item.id);
     delete state.settings.hosts[item.id];
     state.settings.deleted_hosts = [...state.deletedHosts];
@@ -1408,10 +1543,14 @@
     }));
     rowMessage(row, "同步中...");
     row.remove();
-    await saveSettingsPayload(settingsPayloadFromState(), {
+    const ok = await saveSettingsPayload(settingsPayloadFromState(), {
       successMessage: "服务器已删除并同步到后端",
       render: "tables",
     });
+    if (!ok) {
+      restoreSettingsState(snapshot);
+      renderTables();
+    }
   }
 
   async function toggleAccessSecret(row, inputNode, button) {
@@ -1472,7 +1611,7 @@
     $("#editor-apply").textContent = "复制指令";
     const uid = input("js-command-uid", item.id || "");
     uid.placeholder = "留空自动生成";
-    const alias = input("js-command-alias", "");
+    const alias = input("js-command-alias", item.alias && item.alias !== item.id ? item.alias : "");
     alias.placeholder = "留空使用 agent 上报名称";
     const interval = input("js-command-interval", "1", "number");
     interval.min = "1";
@@ -1482,7 +1621,7 @@
     location.placeholder = "留空自动识别";
     const type = input("js-command-type", "");
     type.placeholder = "留空自动识别虚拟化";
-    const weight = input("js-command-weight", "10000", "number");
+    const weight = input("js-command-weight", item.weight ? String(item.weight) : "10000", "number");
     weight.min = "1";
     const grid = el("div", "editor-grid");
     grid.append(
@@ -1502,7 +1641,12 @@
     );
     const optionsBlock = el("div", "option-block wide");
     optionsBlock.append(el("span", "option-label", "采集选项"), options);
-    $("#editor-body").append(grid, optionsBlock);
+    const tokenHint = el(
+      "p",
+      "editor-hint",
+      "复制后会生成一次性接入令牌，默认 15 分钟内有效。Agent 二进制仍从 GitHub Release 下载，上报只使用设置中的 Agent 上报地址。",
+    );
+    $("#editor-body").append(grid, optionsBlock, tokenHint);
   }
 
   function updateSummary() {
@@ -2018,7 +2162,7 @@
     applyButton.textContent = "复制中...";
     try {
       const query = params.toString();
-      const payload = await getJson(`/api/admin/access-command${query ? `?${query}` : ""}`);
+      const payload = await postJson(`/api/admin/access-command${query ? `?${query}` : ""}`);
       const script = payload.data?.script || "";
       if (!script) {
         throw new Error("接入脚本为空");
@@ -2032,9 +2176,10 @@
         labels: "",
       };
       await copyText(script);
-      const successMessage = "接入指令已复制，接入配置已同步";
+      const expiresIn = formatShortDuration(payload.data?.token_expires_in);
+      const successMessage = `接入指令已复制，一次性令牌 ${expiresIn} 内有效`;
       if (row) {
-        rowMessage(row, "已复制并同步", "success");
+        rowMessage(row, `已复制，令牌 ${expiresIn} 内有效`, "success");
       } else {
         text("#save-message", successMessage);
       }

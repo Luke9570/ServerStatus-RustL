@@ -10,6 +10,7 @@ use stat_common::server_status;
 use stat_common::server_status::server_status_server::{ServerStatus, ServerStatusServer};
 use stat_common::server_status::StatRequest;
 
+use crate::auth;
 use crate::config::Config;
 use crate::G_CONFIG;
 use crate::G_STATS_MGR;
@@ -20,8 +21,29 @@ pub struct ServerStatusSrv {}
 #[tonic::async_trait]
 impl ServerStatus for ServerStatusSrv {
     async fn report(&self, request: Request<StatRequest>) -> Result<Response<server_status::Response>, Status> {
+        let (username, password, group_auth) = report_auth_parts(&request)?;
+        let mut stat = request.into_inner();
+        let Some(cfg) = G_CONFIG.get() else {
+            return Err(Status::unauthenticated("invalid user/group && pass"));
+        };
+        let existing_gid = G_STATS_MGR.get().and_then(|mgr| mgr.active_host_gid(&stat.name));
+        let Some(decision) = auth::verify_report_auth(
+            cfg,
+            &username,
+            &password,
+            group_auth,
+            &stat.name,
+            &stat.gid,
+            existing_gid.as_deref(),
+        ) else {
+            return Err(Status::unauthenticated("invalid user/group && pass"));
+        };
+        if let Some(gid) = decision.override_gid {
+            stat.gid = gid;
+        }
+
         if let Some(mgr) = G_STATS_MGR.get() {
-            match serde_json::to_value(request.get_ref()) {
+            match serde_json::to_value(&stat) {
                 Ok(v) => {
                     let _ = mgr.report(v);
                 }
@@ -38,41 +60,30 @@ impl ServerStatus for ServerStatusSrv {
     }
 }
 
-fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
-    let mut group_auth = false;
-    req.metadata().get("ssr-auth").map(|v| {
-        v.to_str().map(|s| {
-            group_auth = s.eq("group");
-        })
-    });
-
-    match req.metadata().get("authorization") {
-        Some(token) => {
-            let tuple = token.to_str().unwrap_or("").split("@_@").collect::<Vec<_>>();
-
-            if tuple.len() == 2 {
-                if let Some(cfg) = G_CONFIG.get() {
-                    if group_auth {
-                        if cfg.group_auth(tuple[0], tuple[1]) {
-                            return Ok(req);
-                        }
-                    } else if cfg.auth(tuple[0], tuple[1]) {
-                        return Ok(req);
-                    }
-                }
-            }
-
-            Err(Status::unauthenticated("invalid user/group && pass"))
-        }
-
-        _ => Err(Status::unauthenticated("invalid user/group && pass")),
+fn report_auth_parts(req: &Request<StatRequest>) -> Result<(String, String, bool), Status> {
+    let group_auth = req
+        .metadata()
+        .get("ssr-auth")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == "group");
+    let token = req
+        .metadata()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| Status::unauthenticated("invalid user/group && pass"))?;
+    let mut parts = token.splitn(2, "@_@");
+    let username = parts.next().unwrap_or_default().to_string();
+    let password = parts.next().unwrap_or_default().to_string();
+    if username.is_empty() || password.is_empty() {
+        return Err(Status::unauthenticated("invalid user/group && pass"));
     }
+    Ok((username, password, group_auth))
 }
 
 pub async fn serv_grpc(cfg: &Config) -> anyhow::Result<()> {
     let sock_addr = cfg.grpc_addr.parse().unwrap();
     let sss = ServerStatusSrv::default();
-    let svc = ServerStatusServer::with_interceptor(sss, check_auth);
+    let svc = ServerStatusServer::new(sss);
 
     if cfg.grpc_tls > 0 {
         let mut proto = " + TLS";

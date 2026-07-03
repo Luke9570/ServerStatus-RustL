@@ -46,6 +46,10 @@
     return Boolean(server && server.expire && server.expire.configured);
   }
 
+  function isPermanent(expire) {
+    return Boolean(expire && expire.status === "permanent");
+  }
+
   function isOnline(server) {
     return Boolean(server && (server.online4 || server.online6));
   }
@@ -70,8 +74,18 @@
     return !hasExpiry(server);
   }
 
+  function expiryDateText(expire) {
+    if (!expire) {
+      return "-";
+    }
+    if (isPermanent(expire)) {
+      return "永久";
+    }
+    return expire.date || expire.raw || "-";
+  }
+
   function daysText(expire) {
-    if (!expire || expire.status === "permanent") {
+    if (!expire || isPermanent(expire)) {
       return "永久";
     }
     if (expire.status === "unknown") {
@@ -114,6 +128,9 @@
     }
 
     const expire = server.expire;
+    if (isPermanent(expire)) {
+      return false;
+    }
     if (expire.status === "expired" || expire.status === "unknown") {
       return true;
     }
@@ -131,6 +148,9 @@
   function riskRank(server) {
     if (treatAsMissing(server)) {
       return 0;
+    }
+    if (hasExpiry(server) && isPermanent(server.expire)) {
+      return 6;
     }
     if (hasExpiry(server) && server.expire.status === "expired") {
       return 1;
@@ -154,8 +174,8 @@
   }
 
   function sortByDue(a, b) {
-    const ad = hasExpiry(a) ? a.expire.days_left : Number.MAX_SAFE_INTEGER;
-    const bd = hasExpiry(b) ? b.expire.days_left : Number.MAX_SAFE_INTEGER;
+    const ad = hasExpiry(a) && !isPermanent(a.expire) ? a.expire.days_left : Number.MAX_SAFE_INTEGER;
+    const bd = hasExpiry(b) && !isPermanent(b.expire) ? b.expire.days_left : Number.MAX_SAFE_INTEGER;
     if (ad !== bd) {
       return ad - bd;
     }
@@ -198,7 +218,7 @@
 
     const date = document.createElement("span");
     date.className = "ssr-expiry-date";
-    date.textContent = "未配置到期";
+    date.textContent = "未配置到期时间";
 
     const label = document.createElement("span");
     label.className = "ssr-expiry-label";
@@ -218,7 +238,7 @@
     chip.className = `ssr-expiry-chip ${statusClass(expire.status)}`;
     chip.title = [
       displayName(server),
-      expire.date || expire.raw,
+      expiryDateText(expire),
       expire.label,
       renewalText(expire),
     ]
@@ -231,11 +251,11 @@
 
     const date = document.createElement("span");
     date.className = "ssr-expiry-date";
-    date.textContent = expire.date || expire.raw || "-";
+    date.textContent = expiryDateText(expire);
 
     const label = document.createElement("span");
     label.className = "ssr-expiry-label";
-    label.textContent = daysText(expire);
+    label.textContent = isPermanent(expire) ? "长期有效" : daysText(expire);
 
     chip.append(name, date, label);
 
@@ -363,6 +383,8 @@
     }
 
     const configured = servers.filter((server) => hasExpiry(server) && !treatAsMissing(server)).sort(sortByDue);
+    const dueServers = configured.filter((server) => !isPermanent(server.expire));
+    const permanent = configured.filter((server) => isPermanent(server.expire));
     const missing = servers.filter(treatAsMissing);
     const expired = configured.filter((server) => server.expire.status === "expired");
     const warning = configured.filter(
@@ -379,7 +401,7 @@
     );
     const auto = configured.filter((server) => server.expire.auto_renewal);
     const attention = servers.filter(needsAttention).sort(sortByRisk).slice(0, 8);
-    const next = configured.find((server) => server.expire.days_left >= 0);
+    const next = dueServers.find((server) => server.expire.days_left >= 0);
 
     const header = document.createElement("div");
     header.className = "ssr-expiry-header";
@@ -394,8 +416,10 @@
     const subtitle = document.createElement("div");
     subtitle.className = "ssr-expiry-subtitle";
     subtitle.textContent = next
-      ? `下一台: ${displayName(next)} ${next.expire.date || next.expire.raw} (${daysText(next.expire)})`
-      : "暂无有效到期日";
+      ? `下一台: ${displayName(next)} ${expiryDateText(next.expire)} (${daysText(next.expire)})`
+      : permanent.length > 0 && missing.length === 0
+        ? "所有已配置节点均为永久"
+        : "暂无有效到期日";
 
     titleWrap.append(title, subtitle);
 
@@ -435,7 +459,7 @@
 
       const label = document.createElement("span");
       label.className = "ssr-row-expiry-label";
-      label.textContent = "未配置到期";
+      label.textContent = "未配置到期时间";
 
       line.append(label);
       return line;
@@ -445,9 +469,17 @@
     const line = document.createElement("div");
     line.className = `ssr-row-expiry ${statusClass(expire.status)}`;
 
+    if (isPermanent(expire)) {
+      const label = document.createElement("span");
+      label.className = "ssr-row-expiry-label";
+      label.textContent = "永久";
+      line.append(label);
+      return line;
+    }
+
     const date = document.createElement("span");
     date.className = "ssr-row-expiry-date";
-    date.textContent = expire.date || expire.raw || "-";
+    date.textContent = expiryDateText(expire);
 
     const label = document.createElement("span");
     label.className = "ssr-row-expiry-label";
@@ -469,7 +501,7 @@
     if (treatAsMissing(server)) {
       const wrap = document.createElement("div");
       wrap.className = "ssr-expanded-expiry ssr-expiry-missing";
-      wrap.textContent = "到期: 未配置 | 状态: 建议补充 VPS 到期时间";
+      wrap.textContent = "到期: 未配置到期时间 | 状态: 建议补充";
       return wrap;
     }
 
@@ -478,7 +510,7 @@
     wrap.className = `ssr-expanded-expiry ${statusClass(expire.status)}`;
 
     const parts = [
-      `到期: ${expire.date || expire.raw || "-"}`,
+      `到期: ${expiryDateText(expire)}`,
       `状态: ${daysText(expire)}`,
       renewalText(expire),
       expire.amount ? `金额: ${expire.amount}` : "",

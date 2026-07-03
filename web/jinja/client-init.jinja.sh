@@ -11,7 +11,7 @@ export SSR_SERVER_URL={{server_url}}
 export SSR_VNSTAT={{vnstat}}
 export SSR_WEIGHT={{weight}}
 export SSR_PKG_VERSION={{pkg_version}}
-export SSR_CLIENT_OPTS='{{client_opts}}'
+export SSR_CLIENT_OPTS={{client_opts_export}}
 export SSR_WORKSPACE={{workspace}}
 export SSR_CN={{cn}}
 export SSR_RELEASE_REPO=${SSR_RELEASE_REPO:-Luke9570/ServerStatus-RustL}
@@ -20,8 +20,8 @@ export SSR_RELEASE_TAG=${SSR_RELEASE_TAG:-v{{pkg_version}}}
 Info="\033[32m[info]\033[0m"
 Error="\033[31m[err]\033[0m"
 
-mkdir -p ${SSR_WORKSPACE}
-cd ${SSR_WORKSPACE}
+mkdir -p "${SSR_WORKSPACE}"
+cd "${SSR_WORKSPACE}"
 
 if [ "${DBG}" = "1" ]; then
     set -x
@@ -84,15 +84,16 @@ function install_deps() {
     done
     if [ "${need_deps}" ]; then
         say "start installing dependencies: ${need_deps}"
+        need_pkgs="${need_deps} ca-certificates"
 
         if [ -x "$(command -v apk 2>/dev/null)" ]; then
             apk update > /dev/null 2>&1
-            apk --no-cache add procps iproute2 coreutils ${need_deps} > /dev/null 2>&1
+            apk --no-cache add procps iproute2 coreutils ${need_pkgs} > /dev/null 2>&1
         elif [ -x "$(command -v apt-get 2>/dev/null)" ]; then
             apt-get update -y > /dev/null 2>&1
-            apt-get install -y  ${need_deps} > /dev/null 2>&1
+            apt-get install -y ${need_pkgs} > /dev/null 2>&1
         elif [ -x "$(command -v yum 2>/dev/null)" ]; then
-            yum install -y  ${need_deps} > /dev/null 2>&1
+            yum install -y ${need_pkgs} > /dev/null 2>&1
         else
             err "未找到合适的包管理工具,请手动安装: ${need_deps}"
             exit 1
@@ -111,7 +112,7 @@ function download_client_from_repo() {
     repo="$1"
     url="https://github.com/${repo}/releases/download/${SSR_RELEASE_TAG}/client-${arch}-unknown-linux-musl.zip"
     say "download from ${repo} ${SSR_RELEASE_TAG}"
-    if ! wget --no-check-certificate -qO "client-${arch}-unknown-linux-musl.zip" "${url}"; then
+    if ! wget -qO "client-${arch}-unknown-linux-musl.zip" "${url}"; then
         say "download failed from ${repo}"
         return 1
     fi
@@ -124,7 +125,7 @@ function download_client_from_repo() {
 
 function download_client() {
 
-    cd ${SSR_WORKSPACE}
+    cd "${SSR_WORKSPACE}"
     rm -f "client-${arch}-unknown-linux-musl.zip" "stat_client" "stat_client.service"
 
     say "start download the stat_client"
@@ -134,14 +135,14 @@ function download_client() {
     say "download stat_client succ"
 
     say "try stop stat_client.service"
-    systemctl stop stat_client > /dev/null | true
+    systemctl stop stat_client > /dev/null 2>&1 || true
 
     say "unzip client-${arch}-unknown-linux-musl.zip"
     unzip -o client-${arch}-unknown-linux-musl.zip || err "failed to unzip stat_client package"
     rm -f "stat_client.service"
 
     [ -f "${SSR_WORKSPACE}/stat_client" ] || err "stat_client not found after unzip"
-    chmod +x ${SSR_WORKSPACE}/stat_client || err "failed to chmod stat_client"
+    chmod +x "${SSR_WORKSPACE}/stat_client" || err "failed to chmod stat_client"
 }
 
 function install_client_service() {
@@ -151,7 +152,7 @@ function install_client_service() {
 
     say "start install stat_client.service"
 
-    cat > /etc/systemd/system/stat_client.service <<-EOF
+    cat > /etc/systemd/system/stat_client.service <<-'EOF'
 [Unit]
 Description=ServerStatus-RustL Telemetry Agent
 After=network.target
@@ -160,8 +161,8 @@ After=network.target
 User=root
 Group=root
 Environment="RUST_BACKTRACE=1"
-WorkingDirectory={{workspace}}
-ExecStart={{workspace}}/stat_client {{client_opts}}
+WorkingDirectory={{workspace_exec}}
+ExecStart={{stat_client_exec}} {{client_opts}}
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 
@@ -179,7 +180,7 @@ EOF
 
     sleep 2
     say "status stat_client.service"
-    systemctl status stat_client
+    systemctl --no-pager --full status stat_client || true
 
 }
 

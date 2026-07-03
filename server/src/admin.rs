@@ -28,7 +28,7 @@ const MAX_ADMIN_PASSWORD_LEN: usize = 256;
 const MAX_ADMIN_USERNAME_LEN: usize = 64;
 pub const DEFAULT_ADMIN_PATH: &str = "/admin";
 const MAX_ADMIN_PATH_LEN: usize = 64;
-const INSTALL_TOKEN_TTL_SECONDS: u64 = 24 * 3600;
+pub const INSTALL_TOKEN_TTL_SECONDS: u64 = 15 * 60;
 
 static ADMIN_STATE: OnceCell<AdminState> = OnceCell::new();
 
@@ -120,9 +120,18 @@ pub struct InstallTokenOverride {
     #[serde(default)]
     pub gid: String,
     #[serde(default)]
+    pub uid: String,
+    #[serde(default)]
     pub token_hash: String,
     #[serde(default)]
     pub expires_at: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstallTokenIssue {
+    pub token: String,
+    pub expires_at: u64,
+    pub expires_in: u64,
 }
 
 fn default_alert_repeat_interval() -> u64 {
@@ -395,6 +404,22 @@ pub fn purge_deleted_hosts(hosts: &[String]) -> Result<AdminData> {
     Ok(public_snapshot())
 }
 
+pub fn clear_deleted_host_marker(name: &str) -> Result<bool> {
+    let state = ADMIN_STATE.get().expect("admin state not initialized");
+    let current = state
+        .data
+        .lock()
+        .ok()
+        .map(|current| current.clone())
+        .unwrap_or_default();
+    let mut data = current;
+    if !remove_deleted_host_marker_from_data(&mut data, name) {
+        return Ok(false);
+    }
+    write_data(state, data)?;
+    Ok(true)
+}
+
 pub fn ensure_default_access_key() -> Result<HostGroup> {
     let state = ADMIN_STATE.get().expect("admin state not initialized");
     let mut data = state.data.lock().unwrap().clone();
@@ -427,36 +452,68 @@ pub fn ensure_default_access_key() -> Result<HostGroup> {
         .ok_or_else(|| anyhow::anyhow!("failed to create default access key"))
 }
 
-pub fn create_install_token(gid: &str) -> Result<String> {
+pub fn create_install_token(gid: &str, uid: &str) -> Result<InstallTokenIssue> {
     let state = ADMIN_STATE.get().expect("admin state not initialized");
     let token = random_install_token();
     let now = unix_ts();
+    let expires_at = now.saturating_add(INSTALL_TOKEN_TTL_SECONDS);
     let token_data = InstallTokenOverride {
         gid: gid.trim().to_string(),
+        uid: uid.trim().to_string(),
         token_hash: install_token_hash(&token),
-        expires_at: now.saturating_add(INSTALL_TOKEN_TTL_SECONDS),
+        expires_at,
     };
 
     let mut data = state.data.lock().unwrap().clone();
     data.install_tokens.retain(|_, item| install_token_valid_at(item, now));
     data.install_tokens.insert(token_data.token_hash.clone(), token_data);
     write_data(state, data)?;
-    Ok(token)
+    Ok(InstallTokenIssue {
+        token,
+        expires_at,
+        expires_in: INSTALL_TOKEN_TTL_SECONDS,
+    })
 }
 
-pub fn resolve_install_token(base: &HashMap<String, HostGroup>, token: &str) -> Option<HostGroup> {
+pub fn consume_install_token(base: &HashMap<String, HostGroup>, token: &str, uid: &str) -> Result<Option<HostGroup>> {
+    let state = ADMIN_STATE.get().expect("admin state not initialized");
+    let mut data = state
+        .data
+        .lock()
+        .ok()
+        .map(|current| current.clone())
+        .unwrap_or_default();
+    let now = unix_ts();
+    let group = consume_install_token_from_data(&mut data, base, token, uid, now);
+    if group.is_some() {
+        write_data(state, data)?;
+    }
+    Ok(group)
+}
+
+fn consume_install_token_from_data(
+    data: &mut AdminData,
+    base: &HashMap<String, HostGroup>,
+    token: &str,
+    uid: &str,
+    now: u64,
+) -> Option<HostGroup> {
     let token = token.trim();
-    if token.is_empty() {
+    let uid = uid.trim();
+    if token.is_empty() || uid.is_empty() {
         return None;
     }
     let token_hash = install_token_hash(token);
-    let now = unix_ts();
-    let data = snapshot();
-    let item = data
+    data.install_tokens.retain(|_, item| install_token_valid_at(item, now));
+    let token_key = data
         .install_tokens
-        .values()
-        .find(|item| item.token_hash == token_hash && install_token_valid_at(item, now))?;
-    effective_group_from_data(&data, base, &item.gid)
+        .iter()
+        .find(|(_, item)| item.token_hash == token_hash && item.uid == uid && install_token_valid_at(item, now))
+        .map(|(key, _)| key.clone())?;
+    let item = data.install_tokens.get(&token_key)?;
+    let group = effective_group_from_data(data, base, &item.gid)?;
+    data.install_tokens.remove(&token_key);
+    Some(group)
 }
 
 pub fn effective_admin_user(base: Option<&str>) -> Option<String> {
@@ -715,9 +772,6 @@ impl NodeOverride {
     fn apply_to(&self, host: &mut Host) {
         if let Some(alias) = &self.alias {
             host.alias.clone_from(alias);
-        }
-        if let Some(note) = &self.note {
-            host.labels = set_label_value(&host.labels, "note", note);
         }
         if let Some(public_note) = &self.public_note {
             host.labels = set_label_value(&host.labels, "public_note", public_note);
@@ -979,8 +1033,21 @@ fn normalize_admin_data(data: &mut AdminData) {
 
     let now = unix_ts();
     data.install_tokens.retain(|token, item| {
-        !token.trim().is_empty() && !item.gid.trim().is_empty() && install_token_valid_at(item, now)
+        !token.trim().is_empty()
+            && !item.gid.trim().is_empty()
+            && !item.uid.trim().is_empty()
+            && install_token_valid_at(item, now)
     });
+}
+
+fn remove_deleted_host_marker_from_data(data: &mut AdminData, name: &str) -> bool {
+    let name = name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    let before = data.deleted_hosts.len();
+    data.deleted_hosts.retain(|host| host != name);
+    before != data.deleted_hosts.len()
 }
 
 pub(crate) fn normalize_tgbot_override(config: &mut TgbotOverride) {
@@ -1434,6 +1501,18 @@ mod tests {
     }
 
     #[test]
+    fn deleted_host_marker_is_removed_when_host_reports_again() {
+        let mut data = AdminData {
+            deleted_hosts: vec!["srv-return".to_string(), "srv-other".to_string()],
+            ..Default::default()
+        };
+
+        assert!(remove_deleted_host_marker_from_data(&mut data, "srv-return"));
+        assert_eq!(data.deleted_hosts, vec!["srv-other"]);
+        assert!(!remove_deleted_host_marker_from_data(&mut data, "srv-return"));
+    }
+
+    #[test]
     fn masked_notification_secrets_keep_existing_values() {
         let current = AdminData {
             tgbot: Some(TgbotOverride {
@@ -1586,6 +1665,7 @@ mod tests {
                     "expired".to_string(),
                     InstallTokenOverride {
                         gid: "default".to_string(),
+                        uid: "srv-expired".to_string(),
                         token_hash: install_token_hash("it_expired"),
                         expires_at: 1,
                     },
@@ -1594,6 +1674,7 @@ mod tests {
                     "valid".to_string(),
                     InstallTokenOverride {
                         gid: "default".to_string(),
+                        uid: "srv-valid".to_string(),
                         token_hash: install_token_hash("it_valid"),
                         expires_at: u64::MAX,
                     },
@@ -1606,6 +1687,42 @@ mod tests {
 
         assert_eq!(data.install_tokens.len(), 1);
         assert!(data.install_tokens.contains_key("valid"));
+    }
+
+    #[test]
+    fn install_tokens_are_bound_to_uid_and_consumed_once() {
+        let raw_token = "it_valid";
+        let mut data = AdminData {
+            access_keys: HashMap::from([(
+                "default".to_string(),
+                AccessKeyOverride {
+                    source_gid: "default".to_string(),
+                    password: "default-pass".to_string(),
+                    ..Default::default()
+                },
+            )]),
+            install_tokens: HashMap::from([(
+                "valid".to_string(),
+                InstallTokenOverride {
+                    gid: "default".to_string(),
+                    uid: "srv-1".to_string(),
+                    token_hash: install_token_hash(raw_token),
+                    expires_at: 100,
+                },
+            )]),
+            ..Default::default()
+        };
+
+        assert!(consume_install_token_from_data(&mut data, &HashMap::new(), raw_token, "srv-2", 50).is_none());
+        assert!(data.install_tokens.contains_key("valid"));
+
+        let group = consume_install_token_from_data(&mut data, &HashMap::new(), raw_token, "srv-1", 50)
+            .expect("token should resolve for the bound uid");
+        assert_eq!(group.gid, "default");
+        assert_eq!(group.password, "default-pass");
+        assert!(data.install_tokens.is_empty());
+
+        assert!(consume_install_token_from_data(&mut data, &HashMap::new(), raw_token, "srv-1", 50).is_none());
     }
 
     #[test]

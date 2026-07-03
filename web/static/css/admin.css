@@ -486,7 +486,7 @@ table {
 }
 
 .server-table {
-  min-width: 1080px;
+  min-width: 1180px;
   table-layout: auto;
 }
 
@@ -497,32 +497,32 @@ table {
 
 .server-table th:nth-child(1),
 .server-table td:nth-child(1) {
-  width: 18%;
+  width: 17%;
 }
 
 .server-table th:nth-child(2),
 .server-table td:nth-child(2) {
-  width: 8%;
+  width: 7%;
 }
 
 .server-table th:nth-child(3),
 .server-table td:nth-child(3) {
-  width: 13%;
+  width: 11%;
 }
 
 .server-table th:nth-child(4),
 .server-table td:nth-child(4) {
-  width: 15%;
+  width: 14%;
 }
 
 .server-table th:nth-child(5),
 .server-table td:nth-child(5) {
-  width: 16%;
+  width: 14%;
 }
 
 .server-table th:nth-child(6),
 .server-table td:nth-child(6) {
-  width: 14%;
+  width: 13%;
 }
 
 .server-table th:nth-child(7),
@@ -532,7 +532,7 @@ table {
 
 .server-table th:nth-child(8),
 .server-table td:nth-child(8) {
-  width: 9%;
+  width: 17%;
 }
 
 .access-table {
@@ -664,9 +664,16 @@ tbody tr:hover {
 .inline-actions,
 .access-row-actions {
   display: inline-flex;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
   flex-wrap: nowrap;
+}
+
+.row-actions .icon-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
 }
 
 .icon-button {
@@ -970,6 +977,13 @@ label.is-disabled {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
+}
+
+.editor-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .date-field {

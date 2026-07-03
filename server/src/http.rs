@@ -533,13 +533,13 @@ fn access_command_response(
     let uid = query_text(params, "uid").unwrap_or_else(random_server_id);
     let alias = query_text(params, "alias");
     let interval = query_u32(&params, "interval", 1, 1, 86_400).to_string();
-    let install_token = match admin::create_install_token(&group.gid) {
+    let install_token = match admin::create_install_token(&group.gid, &uid) {
         Ok(token) => token,
         Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
     };
     let mut query = Vec::new();
     push_query_pair(&mut query, "gid", &group.gid);
-    push_query_pair(&mut query, "token", &install_token);
+    push_query_pair(&mut query, "token", &install_token.token);
     push_query_pair(&mut query, "uid", &uid);
     if let Some(alias) = &alias {
         push_query_pair(&mut query, "alias", alias);
@@ -573,7 +573,8 @@ fn access_command_response(
             "agent_url": agent_url,
             "install_url": install_url,
             "script": script,
-            "token_expires_in": 86400,
+            "token_expires_in": install_token.expires_in,
+            "token_expires_at": install_token.expires_at,
             "params": {
                 "uid": uid,
                 "alias": alias,
@@ -722,7 +723,33 @@ fn shell_quote(value: &str) -> String {
     {
         return value.to_string();
     }
+    shell_export_value(value)
+}
+
+fn shell_export_value(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn systemd_exec_arg(value: &str) -> String {
+    let safe = !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '/' | ':' | '_' | '-' | '=' | ','));
+    if safe {
+        return value.to_string();
+    }
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '%' => escaped.push_str("%%"),
+            '$' => escaped.push_str("$$"),
+            '\n' | '\r' => escaped.push(' '),
+            _ => escaped.push(ch),
+        }
+    }
+    format!("\"{escaped}\"")
 }
 
 fn query_encode(value: &str) -> String {
@@ -773,7 +800,13 @@ pub async fn init_client(uri: Uri, req_header: HeaderMap, Query(params): Query<H
         let Some(cfg) = G_CONFIG.get() else {
             return script_error(StatusCode::UNAUTHORIZED, "接入令牌无效或已过期");
         };
-        let Some(group) = admin::resolve_install_token(&cfg.hosts_group_map, token) else {
+        let Some(group) = (match admin::consume_install_token(&cfg.hosts_group_map, token, uid) {
+            Ok(group) => group,
+            Err(err) => {
+                error!("consume install token failed => {err:?}");
+                None
+            }
+        }) else {
             return script_error(StatusCode::UNAUTHORIZED, "接入令牌无效或已过期");
         };
         gid = group.gid;
@@ -869,80 +902,116 @@ pub async fn init_client(uri: Uri, req_header: HeaderMap, Query(params): Query<H
     let iface = params.get("iface").unwrap_or(&invalid);
     let exclude_iface = params.get("exclude-iface").unwrap_or(&invalid);
 
-    // build client opts
-    let mut client_opts = format!(r#"-a "{server_url}" -p "{pass}""#);
+    // build client opts for systemd ExecStart
+    let mut client_args = vec![
+        "-a".to_string(),
+        systemd_exec_arg(&server_url),
+        "-p".to_string(),
+        systemd_exec_arg(&pass),
+    ];
     if debug {
-        client_opts.push_str(" -d");
+        client_args.push("-d".to_string());
     }
     if vnstat {
-        client_opts.push_str(" -n");
+        client_args.push("-n".to_string());
     }
     if 1 < vnstat_mr && vnstat_mr <= 28 {
-        let _ = write!(client_opts, r" --vnstat-mr {vnstat_mr}");
+        client_args.push("--vnstat-mr".to_string());
+        client_args.push(vnstat_mr.to_string());
     }
     if disable_ping {
-        client_opts.push_str(" --disable-ping");
+        client_args.push("--disable-ping".to_string());
     }
     if disable_tupd {
-        client_opts.push_str(" --disable-tupd");
+        client_args.push("--disable-tupd".to_string());
     }
     if disable_extra {
-        client_opts.push_str(" --disable-extra");
+        client_args.push("--disable-extra".to_string());
     }
     if weight > 0 {
-        let _ = write!(client_opts, r" -w {weight}");
+        client_args.push("-w".to_string());
+        client_args.push(weight.to_string());
     }
     if !gid.is_empty() {
-        let _ = write!(client_opts, r#" -g "{gid}""#);
-        let _ = write!(client_opts, r#" --alias "{alias}""#);
+        client_args.push("-g".to_string());
+        client_args.push(systemd_exec_arg(&gid));
+        client_args.push("--alias".to_string());
+        client_args.push(systemd_exec_arg(alias));
     }
     if !uid.is_empty() {
-        let _ = write!(client_opts, r#" -u "{uid}""#);
+        client_args.push("-u".to_string());
+        client_args.push(systemd_exec_arg(uid));
     }
     if !notify {
-        client_opts.push_str(" --disable-notify");
+        client_args.push("--disable-notify".to_string());
     }
     if !host_type.is_empty() {
-        let _ = write!(client_opts, r#" -t "{host_type}""#);
+        client_args.push("-t".to_string());
+        client_args.push(systemd_exec_arg(host_type));
     }
     if !location.is_empty() {
-        let _ = write!(client_opts, r#" --location "{location}""#);
+        client_args.push("--location".to_string());
+        client_args.push(systemd_exec_arg(location));
     }
     if !cm.is_empty() && cm.contains(':') {
-        let _ = write!(client_opts, r#" --cm "{cm}""#);
+        client_args.push("--cm".to_string());
+        client_args.push(systemd_exec_arg(cm));
     }
     if !ct.is_empty() && ct.contains(':') {
-        let _ = write!(client_opts, r#" --ct "{ct}""#);
+        client_args.push("--ct".to_string());
+        client_args.push(systemd_exec_arg(ct));
     }
     if !cu.is_empty() && cu.contains(':') {
-        let _ = write!(client_opts, r#" --cu "{cu}""#);
+        client_args.push("--cu".to_string());
+        client_args.push(systemd_exec_arg(cu));
     }
 
     if !iface.is_empty() {
-        let _ = write!(client_opts, r#" --iface "{iface}""#);
+        client_args.push("--iface".to_string());
+        client_args.push(systemd_exec_arg(iface));
     }
     if !exclude_iface.is_empty() {
-        let _ = write!(client_opts, r#" --exclude-iface "{exclude_iface}""#);
+        client_args.push("--exclude-iface".to_string());
+        client_args.push(systemd_exec_arg(exclude_iface));
     }
 
     if interval > 0 {
-        let _ = write!(client_opts, r" --interval {interval}");
+        client_args.push("--interval".to_string());
+        client_args.push(interval.to_string());
     }
 
     let ip_source = params.get("ip-source").unwrap_or(&invalid);
     if !ip_source.is_empty() {
-        let _ = write!(client_opts, r#" --ip-source "{ip_source}""#);
+        client_args.push("--ip-source".to_string());
+        client_args.push(systemd_exec_arg(ip_source));
     }
+    let client_opts = client_args.join(" ");
+    let workspace_path = workspace.trim_end_matches('/');
+    let stat_client_path = if workspace_path.is_empty() {
+        "stat_client".to_string()
+    } else {
+        format!("{workspace_path}/stat_client")
+    };
 
     jinja::render_template(
         KIND,
         "client-init",
         context!(
-            pass => pass, uid => uid, gid => gid, alias => alias,
-            vnstat => vnstat, weight => weight, cn => cn,
-            domain => domain, scheme => scheme,
-            server_url => server_url, workspace => workspace,
+            pass => shell_export_value(&pass),
+            uid => shell_export_value(uid),
+            gid => shell_export_value(&gid),
+            alias => shell_export_value(alias),
+            vnstat => shell_export_value(&vnstat.to_string()),
+            weight => shell_export_value(&weight.to_string()),
+            cn => shell_export_value(&cn.to_string()),
+            domain => shell_export_value(&domain),
+            scheme => shell_export_value(&scheme),
+            server_url => shell_export_value(&server_url),
+            workspace => shell_export_value(&workspace),
+            workspace_exec => systemd_exec_arg(&workspace),
+            stat_client_exec => systemd_exec_arg(&stat_client_path),
             client_opts => client_opts,
+            client_opts_export => shell_export_value(&client_opts),
             pkg_version => env!("CARGO_PKG_VERSION"),
         ),
         false,
@@ -1121,7 +1190,7 @@ pub async fn get_detail(_claims: jwt::Claims) -> Response {
 }
 
 // report
-pub async fn report(_auth: auth::HostAuth, req_header: HeaderMap, body: Bytes) -> impl IntoResponse {
+pub async fn report(auth: auth::BasicAuth, req_header: HeaderMap, body: Bytes) -> impl IntoResponse {
     let mut json_data: Option<serde_json::Value> = None;
 
     let content_type_header = req_header.get(header::CONTENT_TYPE);
@@ -1156,12 +1225,80 @@ pub async fn report(_auth: auth::HostAuth, req_header: HeaderMap, body: Bytes) -
         error!("{}", "Invalid json data!");
         return StatusCode::BAD_REQUEST;
     }
+    let mut json_data = json_data.unwrap();
+
+    if !authorize_report_payload(&auth, &req_header, &mut json_data) {
+        return StatusCode::UNAUTHORIZED;
+    }
 
     if let Some(mgr) = G_STATS_MGR.get() {
-        if mgr.report(json_data.unwrap()).is_err() {
+        if mgr.report(json_data).is_err() {
             return StatusCode::BAD_REQUEST;
         }
     }
 
     StatusCode::OK
+}
+
+fn authorize_report_payload(auth: &auth::BasicAuth, req_header: &HeaderMap, json_data: &mut Value) -> bool {
+    let Some(cfg) = G_CONFIG.get() else {
+        return false;
+    };
+    let (name, gid) = report_payload_identity(json_data);
+    let group_auth = req_header
+        .get("ssr-auth")
+        .and_then(|header| header.to_str().ok())
+        .is_some_and(|value| value == "group");
+    let existing_gid = G_STATS_MGR.get().and_then(|mgr| mgr.active_host_gid(&name));
+    let Some(decision) = auth::verify_report_auth(
+        cfg,
+        &auth.username,
+        &auth.password,
+        group_auth,
+        &name,
+        &gid,
+        existing_gid.as_deref(),
+    ) else {
+        return false;
+    };
+    if let Some(gid) = decision.override_gid {
+        if let Value::Object(map) = json_data {
+            map.insert("gid".to_string(), Value::String(gid));
+        }
+    }
+    true
+}
+
+fn report_payload_identity(json_data: &Value) -> (String, String) {
+    let name = json_data
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let gid = json_data
+        .get("gid")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    (name, gid)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shell_export_values_are_single_quoted() {
+        assert_eq!(super::shell_export_value("plain"), "'plain'");
+        assert_eq!(super::shell_export_value("a'b"), "'a'\"'\"'b'");
+        assert_eq!(super::shell_export_value("$(touch /tmp/pwn)"), "'$(touch /tmp/pwn)'");
+    }
+
+    #[test]
+    fn systemd_exec_args_are_quoted_and_escape_specifiers() {
+        assert_eq!(super::systemd_exec_arg("plain"), "plain");
+        assert_eq!(super::systemd_exec_arg("RN 1"), "\"RN 1\"");
+        assert_eq!(super::systemd_exec_arg("50% node"), "\"50%% node\"");
+        assert_eq!(super::systemd_exec_arg("quote\"back\\"), "\"quote\\\"back\\\\\"");
+    }
 }

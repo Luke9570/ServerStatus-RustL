@@ -15,12 +15,13 @@ use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::Host;
+use crate::config::{Host, HostGroup};
 use crate::expiry;
 use crate::notifier::{Event, Notifier};
 use crate::payload::{HostStat, StatsResp};
 
 const SAVE_INTERVAL: u64 = 60;
+const DEFAULT_GROUP_ID: &str = "default";
 const OS_LIST: [&str; 10] = [
     "centos", "debian", "ubuntu", "arch", "windows", "macos", "pi", "android", "linux", "freebsd",
 ];
@@ -69,6 +70,7 @@ pub struct StatsMgr {
     resp_json: Arc<Mutex<String>>,
     stats_data: Arc<Mutex<StatsResp>>,
     stat_map: Arc<Mutex<HashMap<String, Arc<HostStat>>>>,
+    hosts_map: Arc<Mutex<HashMap<String, Host>>>,
 }
 
 impl StatsMgr {
@@ -77,6 +79,7 @@ impl StatsMgr {
             resp_json: Arc::new(Mutex::new("{}".to_string())),
             stats_data: Arc::new(Mutex::new(StatsResp::new())),
             stat_map: Arc::new(Mutex::new(HashMap::new())),
+            hosts_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -135,7 +138,10 @@ impl StatsMgr {
         cfg: &'static crate::config::Config,
         notifies: Arc<Mutex<Vec<Box<dyn Notifier + Send>>>>,
     ) -> Result<()> {
-        let hosts_map_base = Arc::new(Mutex::new(cfg.hosts_map.clone()));
+        let hosts_map_base = self.hosts_map.clone();
+        if let Ok(mut hosts_map_guard) = hosts_map_base.lock() {
+            *hosts_map_guard = cfg.hosts_map.clone();
+        }
 
         // load last_network_in/out
         if let Ok(mut hosts_map_guard) = hosts_map_base.lock() {
@@ -159,8 +165,14 @@ impl StatsMgr {
                     trace!("recv stat `{stat:?}");
 
                     let mut stat_t = stat.to_mut();
-                    if crate::admin::deleted_hosts().contains(&stat_t.name) {
+                    let deleted_hosts = crate::admin::deleted_hosts();
+                    if !should_process_reported_stat(stat_t, &deleted_hosts) {
                         continue;
+                    }
+                    if deleted_hosts.contains(&stat_t.name) {
+                        if let Err(err) = crate::admin::clear_deleted_host_marker(&stat_t.name) {
+                            warn!("failed to clear deleted host marker for {}: {err}", stat_t.name);
+                        }
                     }
 
                     // group mode
@@ -185,6 +197,12 @@ impl StatsMgr {
                                 }
                             }
                         }
+                    } else if let Ok(mut hosts_map) = hosts_map.lock() {
+                        assign_default_group_for_new_host(
+                            stat_t,
+                            &mut hosts_map,
+                            crate::admin::effective_group(&cfg.hosts_group_map, DEFAULT_GROUP_ID),
+                        );
                     }
 
                     //
@@ -212,8 +230,12 @@ impl StatsMgr {
                         stat_t.pos = info.pos;
                         stat_t.disabled = info.disabled;
                         stat_t.weight += info.weight;
-                        stat_t.labels = info.labels.clone();
-                        stat_t.expire = expiry::build_expire_info(&info.expire, &info.billing, &info.labels);
+                        if stat_t.gid.is_empty() {
+                            stat_t.gid = info.gid.clone();
+                        }
+                        let public_labels = public_stat_labels(&info.labels);
+                        stat_t.labels = public_labels.clone();
+                        stat_t.expire = expiry::build_expire_info(&info.expire, &info.billing, &public_labels);
                         stat_t.expire_notify = info.expire_notify;
 
                         // !group
@@ -320,7 +342,7 @@ impl StatsMgr {
 
                 if let Ok(mut host_stat_map) = stat_map.lock() {
                     for (_, stat) in host_stat_map.iter_mut() {
-                        if deleted_hosts.contains(&stat.name) {
+                        if !should_publish_stat(stat, &deleted_hosts) {
                             continue;
                         }
                         if stat.disabled {
@@ -478,6 +500,9 @@ impl StatsMgr {
         if let Ok(mut stat_map) = self.stat_map.lock() {
             stat_map.retain(|name, _| !hosts.contains(name));
         }
+        if let Ok(mut hosts_map) = self.hosts_map.lock() {
+            hosts_map.retain(|name, _| !hosts.contains(name));
+        }
         if let Ok(mut stats_data) = self.stats_data.lock() {
             stats_data.servers.retain(|stat| !hosts.contains(&stat.name));
             if let Ok(mut resp_json) = self.resp_json.lock() {
@@ -485,6 +510,14 @@ impl StatsMgr {
             }
             Self::save_stats_snapshot(&stats_data);
         }
+    }
+
+    pub fn active_host_gid(&self, name: &str) -> Option<String> {
+        self.stat_map
+            .lock()
+            .ok()
+            .and_then(|stat_map| stat_map.get(name.trim()).map(|stat| stat.gid.clone()))
+            .filter(|gid| !gid.trim().is_empty())
     }
 
     #[allow(clippy::unused_self)]
@@ -622,6 +655,47 @@ fn stat_with_custom(stat: &HostStat, custom: String) -> Arc<HostStat> {
     let mut stat = stat.clone();
     stat.custom = custom;
     Arc::new(stat)
+}
+
+fn should_process_reported_stat(stat: &HostStat, _deleted_hosts: &HashSet<String>) -> bool {
+    !stat.name.trim().is_empty()
+}
+
+fn should_publish_stat(stat: &HostStat, _deleted_hosts: &HashSet<String>) -> bool {
+    !stat.name.trim().is_empty()
+}
+
+fn public_stat_labels(labels: &str) -> String {
+    labels
+        .split(';')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .filter(|item| item.split_once('=').is_none_or(|(key, _)| key.trim() != "note"))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn assign_default_group_for_new_host(
+    stat: &mut HostStat,
+    hosts_map: &mut HashMap<String, Host>,
+    default_group: Option<HostGroup>,
+) -> bool {
+    if !stat.gid.trim().is_empty() || stat.name.trim().is_empty() || hosts_map.contains_key(&stat.name) {
+        return false;
+    }
+
+    let Some(group) = default_group else {
+        return false;
+    };
+
+    stat.gid = group.gid.clone();
+    let mut host = group.inst_host(&stat.name);
+    if stat.alias.is_empty() {
+        stat.alias = stat.name.clone();
+    }
+    host.latest_ts = stat.latest_ts;
+    hosts_map.insert(stat.name.clone(), host);
+    true
 }
 
 fn fill_auto_location(stat: &mut HostStat) {
@@ -783,6 +857,7 @@ fn usage_alert_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::HostGroup;
     use stat_common::server_status::{IpInfo, SysInfo};
 
     #[test]
@@ -844,6 +919,86 @@ mod tests {
         fill_auto_location(&mut stat);
         assert_eq!(stat.location, "jp");
         assert_eq!(stat.host_type, "kvm");
+    }
+
+    #[test]
+    fn assigns_new_ungrouped_stat_to_default_group_when_available() {
+        let mut hosts_map = HashMap::new();
+        let mut stat = HostStat {
+            name: "srv-auto".to_string(),
+            ..Default::default()
+        };
+        let group = HostGroup {
+            gid: "default".to_string(),
+            password: "secret".to_string(),
+            location: "hk".to_string(),
+            r#type: "kvm".to_string(),
+            notify: true,
+            pos: 0,
+            weight: 9000,
+            labels: String::new(),
+            expire: String::new(),
+            billing: Default::default(),
+            expire_notify: true,
+        };
+
+        assert!(assign_default_group_for_new_host(&mut stat, &mut hosts_map, Some(group)));
+
+        let host = hosts_map.get("srv-auto").expect("host should be created from default group");
+        assert_eq!(stat.gid, "default");
+        assert_eq!(host.gid, "default");
+        assert_eq!(host.location, "hk");
+        assert_eq!(host.r#type, "kvm");
+        assert_eq!(host.weight, 9000);
+    }
+
+    #[test]
+    fn public_stat_labels_remove_private_note() {
+        let labels = public_stat_labels("os=debian;note=private;public_note=shared;spec=2C/4G");
+
+        assert_eq!(labels, "os=debian;public_note=shared;spec=2C/4G");
+    }
+
+    #[test]
+    fn purge_hosts_removes_runtime_host_and_stat_cache() {
+        let mgr = StatsMgr::new();
+        mgr.hosts_map.lock().unwrap().insert(
+            "srv-gone".to_string(),
+            Host {
+                name: "srv-gone".to_string(),
+                password: "p".to_string(),
+                ..Default::default()
+            },
+        );
+        mgr.stat_map.lock().unwrap().insert(
+            "srv-gone".to_string(),
+            Arc::new(HostStat {
+                name: "srv-gone".to_string(),
+                ..Default::default()
+            }),
+        );
+        mgr.stats_data.lock().unwrap().servers.push(Arc::new(HostStat {
+            name: "srv-gone".to_string(),
+            ..Default::default()
+        }));
+
+        mgr.purge_hosts(&HashSet::from(["srv-gone".to_string()]));
+
+        assert!(!mgr.hosts_map.lock().unwrap().contains_key("srv-gone"));
+        assert!(!mgr.stat_map.lock().unwrap().contains_key("srv-gone"));
+        assert!(mgr.stats_data.lock().unwrap().servers.is_empty());
+    }
+
+    #[test]
+    fn deleted_hosts_do_not_block_future_reports() {
+        let deleted_hosts = HashSet::from(["srv-return".to_string()]);
+        let stat = HostStat {
+            name: "srv-return".to_string(),
+            ..Default::default()
+        };
+
+        assert!(should_process_reported_stat(&stat, &deleted_hosts));
+        assert!(should_publish_stat(&stat, &deleted_hosts));
     }
 }
 
