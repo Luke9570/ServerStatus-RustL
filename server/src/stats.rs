@@ -718,11 +718,8 @@ fn infer_host_type(sys_info: Option<&stat_common::server_status::SysInfo>) -> Op
         return Some(virtualization);
     }
 
-    let has_os_info = !sys_info.os_name.trim().is_empty() || !sys_info.os_family.trim().is_empty();
     match sys_info.os_arch.trim().to_lowercase().as_str() {
         "aarch64" | "arm64" | "armv7" | "armv6" => Some("arm".to_string()),
-        "x86_64" | "x86-64" | "amd64" if has_os_info => Some("kvm".to_string()),
-        _ if has_os_info => Some("vps".to_string()),
         _ => None,
     }
 }
@@ -897,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_kvm_for_linux_x86_without_virtualization() {
+    fn leaves_x86_type_empty_without_virtualization() {
         let mut stat = HostStat {
             sys_info: Some(SysInfo {
                 os_arch: "x86_64".to_string(),
@@ -907,7 +904,7 @@ mod tests {
             ..Default::default()
         };
         fill_auto_location(&mut stat);
-        assert_eq!(stat.host_type, "kvm");
+        assert_eq!(stat.host_type, "");
     }
 
     #[test]
