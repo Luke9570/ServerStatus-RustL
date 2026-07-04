@@ -1459,29 +1459,34 @@
     }
   }
 
-  function nextServerId(sourceId = "srv") {
+  function randomServerIdCandidate() {
+    const bytes = new Uint8Array(4);
+    if (window.crypto?.getRandomValues) {
+      window.crypto.getRandomValues(bytes);
+      return `srv-${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    }
+    return `srv-${Math.random().toString(16).slice(2, 10).padEnd(8, "0")}`;
+  }
+
+  function nextServerId() {
     const used = new Set(serverItems(false).map((server) => server.id));
     Object.keys(state.settings.hosts || {}).forEach((id) => used.add(id));
-    let base = String(sourceId || "srv")
-      .trim()
-      .replace(/[^A-Za-z0-9_-]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    if (!base) {
-      base = "srv";
-    }
-    let index = 1;
-    let id = `${base}-copy`;
+    let id = randomServerIdCandidate();
     while (used.has(id)) {
-      index += 1;
-      id = `${base}-copy-${index}`;
+      id = randomServerIdCandidate();
     }
     return id;
+  }
+
+  function copiedServerAlias(item, id) {
+    const base = String(item.alias || item.id || id || "server").trim() || "server";
+    return `${base}-copy`;
   }
 
   async function duplicateServer(item, row, button) {
     ensureSettings();
     const snapshot = snapshotSettingsState();
-    const id = nextServerId(item.id);
+    const id = nextServerId();
     const billing = {
       end_date: item.billing?.end_date || "",
       auto_renewal: item.billing?.auto_renewal || "0",
@@ -1489,7 +1494,7 @@
       amount: item.billing?.amount || "",
     };
     state.settings.hosts[id] = {
-      alias: item.alias || "",
+      alias: copiedServerAlias(item, id),
       note: item.note || "",
       public_note: item.public_note || "",
       spec: item.spec || "",
