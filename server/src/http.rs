@@ -70,12 +70,17 @@ pub async fn admin_settings(_claims: jwt::Claims) -> Json<Value> {
 
 pub async fn save_admin_settings(_claims: jwt::Claims, Json(payload): Json<admin::AdminData>) -> impl IntoResponse {
     match admin::replace(payload) {
-        Ok(_) => Json(json!({
-            "code": 0,
-            "message": "saved",
-            "data": admin::public_snapshot(),
-        }))
-        .into_response(),
+        Ok(_) => {
+            if let Some(mgr) = G_STATS_MGR.get() {
+                mgr.refresh_admin_overrides();
+            }
+            Json(json!({
+                "code": 0,
+                "message": "saved",
+                "data": admin::public_snapshot(),
+            }))
+            .into_response()
+        }
         Err(err) => {
             let message = err.to_string();
             let status = if message.starts_with("后台入口路径") {

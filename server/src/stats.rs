@@ -431,21 +431,7 @@ impl StatsMgr {
                     }
                 }
 
-                resp.servers.sort_by(|a, b| {
-                    let a_online = a.online4 || a.online6;
-                    let b_online = b.online4 || b.online6;
-                    if a_online != b_online {
-                        return b_online.cmp(&a_online);
-                    }
-                    if a.weight != b.weight {
-                        return a.weight.cmp(&b.weight).reverse();
-                    }
-                    if a.pos != b.pos {
-                        return a.pos.cmp(&b.pos);
-                    }
-                    // same group
-                    a.alias.cmp(&b.alias)
-                });
+                sort_servers(&mut resp.servers);
 
                 // last_network_in/out save /60s
                 if latest_save_ts + SAVE_INTERVAL < now {
@@ -509,6 +495,39 @@ impl StatsMgr {
                 *resp_json = serde_json::to_string(&*stats_data).unwrap_or_else(|_| "{}".to_string());
             }
             Self::save_stats_snapshot(&stats_data);
+        }
+    }
+
+    pub fn refresh_admin_overrides(&self) {
+        if let (Ok(mut hosts_map), Ok(mut stat_map)) = (self.hosts_map.lock(), self.stat_map.lock()) {
+            for (name, info) in hosts_map.iter_mut() {
+                let previous_weight = info.weight;
+                crate::admin::apply_host_override(info);
+                if let Some(stat) = stat_map.get_mut(name) {
+                    refresh_cached_stat_from_host(Arc::make_mut(stat), info, previous_weight);
+                }
+            }
+        }
+        self.rebuild_cached_response();
+    }
+
+    fn rebuild_cached_response(&self) {
+        let deleted_hosts = crate::admin::deleted_hosts();
+        let mut resp = StatsResp::new();
+        if let Ok(stat_map) = self.stat_map.lock() {
+            resp.servers = stat_map
+                .values()
+                .filter(|stat| should_publish_stat(stat, &deleted_hosts))
+                .cloned()
+                .collect();
+        }
+        sort_servers(&mut resp.servers);
+        let resp_json = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
+        if let Ok(mut data) = self.stats_data.lock() {
+            *data = resp;
+        }
+        if let Ok(mut json) = self.resp_json.lock() {
+            *json = resp_json;
         }
     }
 
@@ -663,6 +682,52 @@ fn should_process_reported_stat(stat: &HostStat, _deleted_hosts: &HashSet<String
 
 fn should_publish_stat(stat: &HostStat, _deleted_hosts: &HashSet<String>) -> bool {
     !stat.name.trim().is_empty()
+}
+
+fn sort_servers(servers: &mut [Arc<HostStat>]) {
+    servers.sort_by(|a, b| {
+        let a_online = a.online4 || a.online6;
+        let b_online = b.online4 || b.online6;
+        if a_online != b_online {
+            return b_online.cmp(&a_online);
+        }
+        if a.weight != b.weight {
+            return a.weight.cmp(&b.weight).reverse();
+        }
+        if a.pos != b.pos {
+            return a.pos.cmp(&b.pos);
+        }
+        // same group
+        a.alias.cmp(&b.alias)
+    });
+}
+
+fn refresh_cached_stat_from_host(stat: &mut HostStat, info: &Host, previous_weight: u64) {
+    stat.notify = info.notify && stat.notify;
+    stat.pos = info.pos;
+    stat.disabled = info.disabled;
+    stat.weight = stat.weight.saturating_sub(previous_weight).saturating_add(info.weight);
+    if stat.gid.is_empty() {
+        stat.gid = info.gid.clone();
+    }
+    let public_labels = public_stat_labels(&info.labels);
+    stat.labels = public_labels.clone();
+    stat.expire = expiry::build_expire_info(&info.expire, &info.billing, &public_labels);
+    stat.expire_notify = info.expire_notify;
+    if !info.alias.is_empty() {
+        stat.alias = info.alias.clone();
+    }
+    if info.location.is_empty() {
+        stat.location.clear();
+    } else {
+        stat.location = info.location.clone();
+    }
+    if info.r#type.is_empty() {
+        stat.host_type.clear();
+    } else {
+        stat.host_type = info.r#type.clone();
+    }
+    fill_auto_location(stat);
 }
 
 fn public_stat_labels(labels: &str) -> String {
@@ -1012,6 +1077,106 @@ mod tests {
         assert!(!mgr.hosts_map.lock().unwrap().contains_key("srv-gone"));
         assert!(!mgr.stat_map.lock().unwrap().contains_key("srv-gone"));
         assert!(mgr.stats_data.lock().unwrap().servers.is_empty());
+    }
+
+    #[test]
+    fn cached_stat_weight_refreshes_by_host_weight_delta() {
+        let host = Host {
+            name: "srv-weight".to_string(),
+            alias: "weighted".to_string(),
+            location: "hk".to_string(),
+            r#type: "kvm".to_string(),
+            notify: true,
+            pos: 2,
+            weight: 30_000,
+            labels: "public_note=shared".to_string(),
+            expire_notify: true,
+            ..Default::default()
+        };
+        let mut stat = HostStat {
+            name: "srv-weight".to_string(),
+            alias: "old".to_string(),
+            location: "us".to_string(),
+            host_type: "unknown".to_string(),
+            weight: 15_000,
+            pos: 9,
+            labels: String::new(),
+            expire_notify: false,
+            notify: true,
+            ..Default::default()
+        };
+
+        refresh_cached_stat_from_host(&mut stat, &host, 10_000);
+
+        assert_eq!(stat.weight, 35_000);
+        assert_eq!(stat.alias, "weighted");
+        assert_eq!(stat.location, "hk");
+        assert_eq!(stat.host_type, "kvm");
+        assert_eq!(stat.pos, 2);
+        assert_eq!(stat.labels, "public_note=shared");
+        assert!(stat.expire_notify);
+    }
+
+    #[test]
+    fn rebuilt_cached_response_sorts_by_current_weight() {
+        let mgr = StatsMgr::new();
+        mgr.stat_map.lock().unwrap().insert(
+            "srv-low".to_string(),
+            Arc::new(HostStat {
+                name: "srv-low".to_string(),
+                alias: "low".to_string(),
+                weight: 1_000,
+                ..Default::default()
+            }),
+        );
+        mgr.stat_map.lock().unwrap().insert(
+            "srv-high".to_string(),
+            Arc::new(HostStat {
+                name: "srv-high".to_string(),
+                alias: "high".to_string(),
+                weight: 30_000,
+                ..Default::default()
+            }),
+        );
+
+        mgr.rebuild_cached_response();
+
+        let names = mgr
+            .stats_data
+            .lock()
+            .unwrap()
+            .servers
+            .iter()
+            .map(|stat| stat.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["srv-high".to_string(), "srv-low".to_string()]);
+    }
+
+    #[test]
+    fn cached_stat_cleared_location_and_type_fall_back_to_auto_detection() {
+        let host = Host {
+            name: "srv-auto".to_string(),
+            ..Default::default()
+        };
+        let mut stat = HostStat {
+            name: "srv-auto".to_string(),
+            location: "manual-location".to_string(),
+            host_type: "manual-type".to_string(),
+            ip_info: Some(stat_common::server_status::IpInfo {
+                country: "Singapore".to_string(),
+                ..Default::default()
+            }),
+            sys_info: Some(stat_common::server_status::SysInfo {
+                virtualization: "kvm".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        refresh_cached_stat_from_host(&mut stat, &host, 0);
+
+        assert_eq!(stat.location, "sg");
+        assert_eq!(stat.host_type, "kvm");
     }
 
     #[test]

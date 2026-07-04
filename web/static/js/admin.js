@@ -453,6 +453,7 @@
       const responsePayload = await postSettings(payload);
       state.settings = responsePayload.data || {};
       ensureSettings();
+      await refreshStatsForRender(render);
       if (render === "all") {
         renderAll();
       } else if (render === "tables") {
@@ -503,6 +504,17 @@
       cache: "no-store",
     });
     return readJson(response);
+  }
+
+  async function refreshStatsForRender(render) {
+    if (render !== "all" && render !== "tables") {
+      return;
+    }
+    try {
+      state.stats = await getJson("/api/admin/stats.json");
+    } catch (err) {
+      console.warn("failed to refresh admin stats", err);
+    }
   }
 
   async function postJson(url) {
@@ -2453,6 +2465,7 @@
       const responsePayload = await postSettings(settingsPayload);
       state.settings = responsePayload.data || {};
       ensureSettings();
+      await refreshStatsForRender("all");
       renderAll();
       markPristine("已同步到后端");
       showToast("配置已保存并同步到后端");
