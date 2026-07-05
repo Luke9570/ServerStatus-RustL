@@ -226,10 +226,11 @@
 }
 
 .ssr-row-expiry {
-  display: flex;
+  display: inline-flex;
   gap: 5px;
   justify-content: center;
   align-items: center;
+  width: max-content;
   max-width: 100%;
   margin: 2px auto 0;
   padding: 1px 4px;

@@ -2931,9 +2931,9 @@
   applyTheme(state.theme);
   updateSaveButton();
 
-  setView("login");
   const hadStoredToken = Boolean(state.token);
   if (state.token) {
+    setView("loading");
     enterDashboard().catch((err) => {
       clearSession();
       setView("login");
@@ -2941,5 +2941,7 @@
         text("#login-message", err.message === "Invalid token" ? "登录已过期，请重新登录" : err.message);
       }
     });
+  } else {
+    setView("login");
   }
 })();
