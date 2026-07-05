@@ -53,9 +53,15 @@ function check_arch() {
     case $(uname -m) in
         x86_64)
             arch=x86_64
+            target=x86_64-unknown-linux-musl
         ;;
         aarch64 | aarch64_be | arm64 | armv8b | armv8l)
             arch=aarch64
+            target=aarch64-unknown-linux-musl
+        ;;
+        armv7l | armv7)
+            arch=armv7
+            target=armv7-unknown-linux-musleabihf
         ;;
         *)
             err "暂不支持该系统架构"
@@ -110,13 +116,13 @@ function install_deps() {
 
 function download_client_from_repo() {
     repo="$1"
-    url="https://github.com/${repo}/releases/download/${SSR_RELEASE_TAG}/client-${arch}-unknown-linux-musl.zip"
+    url="https://github.com/${repo}/releases/download/${SSR_RELEASE_TAG}/client-${target}.zip"
     say "download from ${repo} ${SSR_RELEASE_TAG}"
-    if ! wget -qO "client-${arch}-unknown-linux-musl.zip" "${url}"; then
+    if ! wget -qO "client-${target}.zip" "${url}"; then
         say "download failed from ${repo}"
         return 1
     fi
-    if ! unzip -tq "client-${arch}-unknown-linux-musl.zip" > /dev/null 2>&1; then
+    if ! unzip -tq "client-${target}.zip" > /dev/null 2>&1; then
         say "invalid zip from ${repo}"
         return 1
     fi
@@ -126,19 +132,19 @@ function download_client_from_repo() {
 function download_client() {
 
     cd "${SSR_WORKSPACE}"
-    rm -f "client-${arch}-unknown-linux-musl.zip" "stat_client" "stat_client.service"
+    rm -f "client-${target}.zip" "stat_client" "stat_client.service"
 
     say "start download the stat_client"
 
-    download_client_from_repo "${SSR_RELEASE_REPO}" || err "failed to download stat_client from ${SSR_RELEASE_REPO} ${SSR_RELEASE_TAG}; please publish client-${arch}-unknown-linux-musl.zip in this GitHub release"
+    download_client_from_repo "${SSR_RELEASE_REPO}" || err "failed to download stat_client from ${SSR_RELEASE_REPO} ${SSR_RELEASE_TAG}; please publish client-${target}.zip in this GitHub release"
 
     say "download stat_client succ"
 
     say "try stop stat_client.service"
     systemctl stop stat_client > /dev/null 2>&1 || true
 
-    say "unzip client-${arch}-unknown-linux-musl.zip"
-    unzip -o client-${arch}-unknown-linux-musl.zip || err "failed to unzip stat_client package"
+    say "unzip client-${target}.zip"
+    unzip -o client-${target}.zip || err "failed to unzip stat_client package"
     rm -f "stat_client.service"
 
     [ -f "${SSR_WORKSPACE}/stat_client" ] || err "stat_client not found after unzip"

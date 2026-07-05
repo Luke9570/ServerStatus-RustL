@@ -75,9 +75,15 @@ function check_arch() {
     case $(uname -m) in
         x86_64)
             arch=x86_64
+            target=x86_64-unknown-linux-musl
         ;;
         aarch64 | aarch64_be | arm64 | armv8b | armv8l)
             arch=aarch64
+            target=aarch64-unknown-linux-musl
+        ;;
+        armv7l | armv7)
+            arch=armv7
+            target=armv7-unknown-linux-musleabihf
         ;;
         *)
             echo -e "${Error} 暂不支持该系统架构"
@@ -333,21 +339,21 @@ function get_status() {
     fi
     install_tool
     cd /tmp || exit
-    rm -f "server-${arch}-unknown-linux-musl.zip" "client-${arch}-unknown-linux-musl.zip"
+    rm -f "server-${target}.zip" "client-${target}.zip"
     rm -f "stat_server" "stat_client" "stat_server.service" "stat_client.service"
 
     # 判断为空或者 "-a" "--all"，为空可以兼容前面的函数功能
     if [ -z "$1" ] || [ "$1" = "-a" ] || [ "$1" = "--all" ]; then
-        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
-        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
-        unzip -o server-${arch}-unknown-linux-musl.zip
-        unzip -o client-${arch}-unknown-linux-musl.zip
+        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${target}.zip"
+        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${target}.zip"
+        unzip -o server-${target}.zip
+        unzip -o client-${target}.zip
     elif [ "$1" = "-s" ] || [ "$1" = "--server" ]; then
-        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${arch}-unknown-linux-musl.zip"
-        unzip -o server-${arch}-unknown-linux-musl.zip
+        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/server-${target}.zip"
+        unzip -o server-${target}.zip
     elif [ "$1" = "-c" ] || [ "$1" = "--client" ]; then
-        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${arch}-unknown-linux-musl.zip"
-        unzip -o client-${arch}-unknown-linux-musl.zip
+        wget -q "${MIRROR}https://github.com/${release_repo}/releases/latest/download/client-${target}.zip"
+        unzip -o client-${target}.zip
     else
         echo "无效的参数"
         exit 1

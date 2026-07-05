@@ -198,15 +198,28 @@ Release 中需要包含对应架构的 Agent 压缩包，例如：
 ```text
 client-x86_64-unknown-linux-musl.zip
 client-aarch64-unknown-linux-musl.zip
+client-armv7-unknown-linux-musleabihf.zip
 ```
 
 如果要临时指定 Release 源或 tag：
 
 ```bash
 SSR_RELEASE_REPO=Luke9570/ServerStatus-RustL \
-SSR_RELEASE_TAG=v1.8.3 \
+SSR_RELEASE_TAG=v1.8.4 \
 curl -fsSL "https://example.com/i?..." | bash
 ```
+
+### ARMv7 / OneCloud 接入
+
+OneCloud 等 32 位 ARM 系统通常显示为 `armv7l`。后台一键安装脚本会下载：
+
+```text
+client-armv7-unknown-linux-musleabihf.zip
+```
+
+因此需要先发布包含该文件的新版 Release。安装脚本是由服务端嵌入并输出的，更新脚本能力后也需要更新服务端镜像/二进制，否则旧服务端仍会生成不支持 `armv7l` 的安装脚本。
+
+OneCloud/Armbian 如有 systemd，可以直接在后台复制一键接入命令执行。建议保留位置和类型为空让 Agent 自动识别；低性能设备可在接入选项中禁用 ping。
 
 ## 本地开发检查
 

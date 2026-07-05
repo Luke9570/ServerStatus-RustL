@@ -6,15 +6,29 @@ SSR_RELEASE_REPO=${SSR_RELEASE_REPO:-Luke9570/ServerStatus-RustL}
 mkdir -p ${WORKSPACE}
 cd ${WORKSPACE}
 
-# 下载, arm 机器替换 x86_64 为 aarch64
-OS_ARCH="x86_64"
+# 下载
+case "$(uname -m)" in
+    x86_64)
+        OS_TARGET="x86_64-unknown-linux-musl"
+    ;;
+    aarch64 | aarch64_be | arm64 | armv8b | armv8l)
+        OS_TARGET="aarch64-unknown-linux-musl"
+    ;;
+    armv7l | armv7)
+        OS_TARGET="armv7-unknown-linux-musleabihf"
+    ;;
+    *)
+        echo "unsupported arch: $(uname -m)" >&2
+        exit 1
+    ;;
+esac
 latest_version=$(curl -m 10 -sL "https://api.github.com/repos/${SSR_RELEASE_REPO}/releases/latest" | grep "tag_name" | head -n 1 | awk -F ":" '{print $2}' | sed 's/\"//g;s/,//g;s/ //g')
 
-wget -qO "server-${OS_ARCH}-unknown-linux-musl.zip"  "https://github.com/${SSR_RELEASE_REPO}/releases/download/${latest_version}/server-${OS_ARCH}-unknown-linux-musl.zip"
-wget -qO "client-${OS_ARCH}-unknown-linux-musl.zip"  "https://github.com/${SSR_RELEASE_REPO}/releases/download/${latest_version}/client-${OS_ARCH}-unknown-linux-musl.zip"
+wget -qO "server-${OS_TARGET}.zip"  "https://github.com/${SSR_RELEASE_REPO}/releases/download/${latest_version}/server-${OS_TARGET}.zip"
+wget -qO "client-${OS_TARGET}.zip"  "https://github.com/${SSR_RELEASE_REPO}/releases/download/${latest_version}/client-${OS_TARGET}.zip"
 
-unzip -o "server-${OS_ARCH}-unknown-linux-musl.zip"
-unzip -o "client-${OS_ARCH}-unknown-linux-musl.zip"
+unzip -o "server-${OS_TARGET}.zip"
+unzip -o "client-${OS_TARGET}.zip"
 
 # systemd service
 mv -v stat_server.service /etc/systemd/system/stat_server.service
