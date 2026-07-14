@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::notifier::{Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{redact_secrets, send_with_retry, Event, HostStat, NOTIFIER_HANDLE};
 
 const KIND: &str = "tgbot";
 
@@ -68,25 +68,54 @@ impl TGBot {
             .cloned()
             .ok_or_else(|| anyhow!("notification runtime is unavailable"))?;
         let http_client = self.http_client.clone();
+        let secrets = [tg_url.clone(), config.bot_token.clone(), config.chat_id.clone()];
         handle.spawn(async move {
-            match http_client
-                .post(&tg_url)
-                .timeout(Duration::from_secs(5))
-                .json(&data)
-                .send()
-                .await
-            {
-                Ok(resp) => info!("tg send msg status => {}", resp.status()),
+            match deliver_telegram(&http_client, &tg_url, &data).await {
+                Ok(()) => info!("telegram notification sent"),
                 Err(err) => {
                     error!(
-                        "tg send msg error => {}",
-                        sanitize_tg_error(&err.to_string(), &tg_url)
+                        "telegram notification failed: {}",
+                        redact_secrets(&err.to_string(), &secrets)
                     );
                 }
             }
         });
 
         Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct TelegramResponse {
+    ok: bool,
+}
+
+async fn deliver_telegram(http_client: &reqwest::Client, endpoint: &str, data: &HashMap<&str, String>) -> Result<()> {
+    let response = send_with_retry(|| {
+        http_client
+            .post(endpoint)
+            .timeout(Duration::from_secs(5))
+            .json(data)
+            .send()
+    })
+    .await?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|_| anyhow!("invalid Telegram response"))?;
+    validate_telegram_response(status, &body)
+}
+
+fn validate_telegram_response(status: reqwest::StatusCode, body: &str) -> Result<()> {
+    if !status.is_success() {
+        return Err(anyhow!("Telegram request failed with HTTP status {}", status.as_u16()));
+    }
+    let response: TelegramResponse = serde_json::from_str(body).map_err(|_| anyhow!("invalid Telegram response"))?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(anyhow!("Telegram provider rejected notification"))
     }
 }
 
@@ -142,9 +171,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
     let rendered = environment
         .get_template("telegram")
         .map_err(|_| anyhow!("invalid Telegram template"))?
-        .render(
-            context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info),
-        )
+        .render(context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info))
         .map_err(|_| anyhow!("failed to render Telegram template"))?;
     Ok(rendered
         .lines()
@@ -152,16 +179,6 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n"))
-}
-
-fn sanitize_tg_error(message: &str, tg_url: &str) -> String {
-    let mut sanitized = message.replace(tg_url, "https://api.telegram.org/bot[redacted]/sendMessage");
-    if let Some((_, rest)) = tg_url.split_once("/bot") {
-        if let Some((token, _)) = rest.split_once("/sendMessage") {
-            sanitized = sanitized.replace(token, "[redacted]");
-        }
-    }
-    sanitized
 }
 
 #[cfg(test)]
@@ -192,13 +209,9 @@ mod tests {
         }));
         let notifier = TGBot::new(config);
 
-        let error = crate::notifier::Notifier::notify(
-            &notifier,
-            &Event::NodeUp,
-            &HostStat::default(),
-        )
-        .unwrap_err()
-        .to_string();
+        let error = crate::notifier::Notifier::notify(&notifier, &Event::NodeUp, &HostStat::default())
+            .unwrap_err()
+            .to_string();
 
         assert_eq!(error, "invalid Telegram template");
         assert!(!error.contains("sentinel-template-secret"));
@@ -227,5 +240,12 @@ mod tests {
         ] {
             assert_eq!(render_content(&config, &event, &stat).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn telegram_response_requires_http_success_and_ok_true() {
+        assert!(validate_telegram_response(reqwest::StatusCode::OK, r#"{"ok":true}"#).is_ok());
+        assert!(validate_telegram_response(reqwest::StatusCode::OK, r#"{"ok":false}"#).is_err());
+        assert!(validate_telegram_response(reqwest::StatusCode::BAD_GATEWAY, r#"{"ok":true}"#,).is_err());
     }
 }

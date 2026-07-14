@@ -8,11 +8,12 @@ use serde_json;
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::notifier::{Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{redact_secrets, send_with_retry, Event, HostStat, NOTIFIER_HANDLE};
 
 // https://qydev.weixin.qq.com/wiki/index.php?title=%E4%B8%BB%E5%8A%A8%E8%B0%83%E7%94%A8
 // https://qydev.weixin.qq.com/wiki/index.php?title=%E5%8F%91%E9%80%81%E6%8E%A5%E5%8F%A3%E8%AF%B4%E6%98%8E
 static TOKEN_URL: &str = "https://qyapi.weixin.qq.com/cgi-bin/gettoken";
+static SEND_URL: &str = "https://qyapi.weixin.qq.com/cgi-bin/message/send";
 const KIND: &str = "wechat";
 
 fn default_expire_tpl() -> String {
@@ -72,53 +73,118 @@ impl WeChat {
             .cloned()
             .ok_or_else(|| anyhow!("notification runtime is unavailable"))?;
         let agent_id = config.agent_id.clone();
+        let secrets = [
+            config.corp_id.clone(),
+            config.corp_secret.clone(),
+            config.agent_id.clone(),
+        ];
         handle.spawn(async move {
-            match http_client
-                .post(TOKEN_URL)
-                .timeout(Duration::from_secs(5))
-                .json(&data)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    let json_res = resp.json::<HashMap<String, serde_json::Value>>().await;
-                    if let Ok(json_data) = json_res {
-                        if let Some(token) = json_data
-                            .get("access_token")
-                            .and_then(serde_json::Value::as_str)
-                        {
-                            let req_url =
-                                format!("https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}");
-                            let req_data = serde_json::json!({
-                                "touser": "@all",
-                                "agentid": agent_id,
-                                "msgtype": "text",
-                                "text": {
-                                    "content": text_content,
-                                },
-                                "safe": 0
-                            });
-
-                            match http_client
-                                .post(&req_url)
-                                .timeout(Duration::from_secs(5))
-                                .json(&req_data)
-                                .send()
-                                .await
-                            {
-                                Ok(resp) => {
-                                    info!("wechat send message status => {}", resp.status());
-                                }
-                                Err(_) => error!("wechat send message failed"),
-                            }
-                        }
-                    }
-                }
-                Err(_) => error!("wechat access token request failed"),
+            match deliver_wechat(&http_client, TOKEN_URL, SEND_URL, &data, &agent_id, &text_content).await {
+                Ok(()) => info!("wechat notification sent"),
+                Err(err) => error!(
+                    "wechat notification failed: {}",
+                    redact_secrets(&err.to_string(), &secrets)
+                ),
             }
         });
 
         Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct WeChatResponse {
+    errcode: i64,
+    #[serde(default)]
+    access_token: Option<String>,
+}
+
+async fn deliver_wechat(
+    http_client: &reqwest::Client,
+    token_endpoint: &str,
+    send_endpoint: &str,
+    token_data: &HashMap<&str, String>,
+    agent_id: &str,
+    text_content: &str,
+) -> Result<()> {
+    let query_secrets = token_data.values().map(String::as_str).collect::<Vec<_>>();
+    let mut token_url = reqwest::Url::parse(token_endpoint).map_err(|_| anyhow!("invalid WeChat token endpoint"))?;
+    {
+        let mut query = token_url.query_pairs_mut();
+        for (name, value) in token_data {
+            query.append_pair(name, value);
+        }
+    }
+    let token_response = send_with_retry(|| {
+        http_client
+            .get(token_url.clone())
+            .timeout(Duration::from_secs(5))
+            .send()
+    })
+    .await
+    .map_err(|error| anyhow!(redact_secrets(&error.to_string(), &query_secrets)))?;
+    let token_status = token_response.status();
+    let token_body = token_response
+        .text()
+        .await
+        .map_err(|_| anyhow!("invalid WeChat token response"))?;
+    let token = parse_token_response(token_status, &token_body)?;
+
+    let send_url = format!("{send_endpoint}?access_token={token}");
+    let send_data = serde_json::json!({
+        "touser": "@all",
+        "agentid": agent_id,
+        "msgtype": "text",
+        "text": {
+            "content": text_content,
+        },
+        "safe": 0
+    });
+    let send_response = send_with_retry(|| {
+        http_client
+            .post(&send_url)
+            .timeout(Duration::from_secs(5))
+            .json(&send_data)
+            .send()
+    })
+    .await?;
+    let send_status = send_response.status();
+    let send_body = send_response
+        .text()
+        .await
+        .map_err(|_| anyhow!("invalid WeChat send response"))?;
+    validate_send_response(send_status, &send_body)
+}
+
+fn parse_token_response(status: reqwest::StatusCode, body: &str) -> Result<String> {
+    if !status.is_success() {
+        return Err(anyhow!(
+            "WeChat token request failed with HTTP status {}",
+            status.as_u16()
+        ));
+    }
+    let response: WeChatResponse = serde_json::from_str(body).map_err(|_| anyhow!("invalid WeChat token response"))?;
+    if response.errcode != 0 {
+        return Err(anyhow!("WeChat token request was rejected"));
+    }
+    response
+        .access_token
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| anyhow!("invalid WeChat token response"))
+}
+
+fn validate_send_response(status: reqwest::StatusCode, body: &str) -> Result<()> {
+    if !status.is_success() {
+        return Err(anyhow!(
+            "WeChat send request failed with HTTP status {}",
+            status.as_u16()
+        ));
+    }
+    let response: WeChatResponse = serde_json::from_str(body).map_err(|_| anyhow!("invalid WeChat send response"))?;
+    if response.errcode == 0 {
+        Ok(())
+    } else {
+        Err(anyhow!("WeChat send request was rejected"))
     }
 }
 
@@ -187,6 +253,66 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        extract::{Query, State},
+        routing::{get, post},
+        Json, Router,
+    };
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    #[derive(Default)]
+    struct CapturedWeChatRequests {
+        token_calls: AtomicUsize,
+        token_queries: Mutex<Vec<HashMap<String, String>>>,
+        send_queries: Mutex<Vec<HashMap<String, String>>>,
+    }
+
+    async fn token_response(
+        State(captured): State<Arc<CapturedWeChatRequests>>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let call = captured.token_calls.fetch_add(1, Ordering::SeqCst);
+        captured.token_queries.lock().unwrap().push(query.clone());
+        if call == 0 {
+            Json(serde_json::json!({
+                "errcode": 0,
+                "access_token": "access-token",
+            }))
+        } else {
+            Json(serde_json::json!({
+                "errcode": 40013,
+                "errmsg": format!(
+                    "{} {}",
+                    query.get("corpid").map(String::as_str).unwrap_or_default(),
+                    query.get("corpsecret").map(String::as_str).unwrap_or_default(),
+                ),
+            }))
+        }
+    }
+
+    async fn send_response(
+        State(captured): State<Arc<CapturedWeChatRequests>>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        captured.send_queries.lock().unwrap().push(query);
+        Json(serde_json::json!({ "errcode": 0 }))
+    }
+
+    async fn wechat_endpoints(captured: Arc<CapturedWeChatRequests>) -> (String, String) {
+        let app = Router::new()
+            .route("/token", get(token_response))
+            .route("/send", post(send_response))
+            .with_state(captured);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/token"), format!("http://{address}/send"))
+    }
 
     #[test]
     fn disabled_invalid_template_does_not_panic_during_construction() {
@@ -199,5 +325,105 @@ mod tests {
         let notifier = WeChat::new(config);
 
         assert_eq!(crate::notifier::Notifier::kind(&notifier), "wechat");
+    }
+
+    #[test]
+    fn enabled_malformed_wechat_template_returns_redacted_error() {
+        let config = Box::leak(Box::new(Config {
+            enabled: true,
+            corp_id: "sentinel-corp-id".into(),
+            corp_secret: "sentinel-corp-secret".into(),
+            agent_id: "sentinel-agent-id".into(),
+            online_tpl: "{{ sentinel-template-secret".into(),
+            ..Default::default()
+        }));
+        let notifier = WeChat::new(config);
+
+        let error = crate::notifier::Notifier::notify(&notifier, &Event::NodeUp, &HostStat::default())
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(error, "invalid WeChat template");
+        for secret in [
+            "sentinel-corp-id",
+            "sentinel-corp-secret",
+            "sentinel-agent-id",
+            "sentinel-template-secret",
+        ] {
+            assert!(!error.contains(secret));
+        }
+    }
+
+    #[test]
+    fn wechat_token_and_send_responses_require_errcode_zero() {
+        assert_eq!(
+            parse_token_response(reqwest::StatusCode::OK, r#"{"errcode":0,"access_token":"token"}"#,).unwrap(),
+            "token"
+        );
+        assert!(parse_token_response(
+            reqwest::StatusCode::OK,
+            r#"{"errcode":40013,"access_token":"sentinel-token"}"#,
+        )
+        .is_err());
+        assert!(validate_send_response(reqwest::StatusCode::OK, r#"{"errcode":0}"#).is_ok());
+        assert!(validate_send_response(
+            reqwest::StatusCode::OK,
+            r#"{"errcode":81013,"errmsg":"sentinel-provider-secret"}"#,
+        )
+        .is_err());
+        assert!(validate_send_response(reqwest::StatusCode::BAD_GATEWAY, r#"{"errcode":0}"#,).is_err());
+    }
+
+    #[tokio::test]
+    async fn wechat_token_uses_get_query_and_redacts_provider_failures() {
+        let captured = Arc::new(CapturedWeChatRequests::default());
+        let (token_endpoint, send_endpoint) = wechat_endpoints(Arc::clone(&captured)).await;
+        let corp_id = "sentinel corp&id".to_string();
+        let corp_secret = "sentinel secret&value".to_string();
+        let token_data = HashMap::from([("corpid", corp_id.clone()), ("corpsecret", corp_secret.clone())]);
+        let client = reqwest::Client::new();
+
+        deliver_wechat(
+            &client,
+            &token_endpoint,
+            &send_endpoint,
+            &token_data,
+            "agent-id",
+            "message",
+        )
+        .await
+        .unwrap();
+
+        let error = deliver_wechat(
+            &client,
+            &token_endpoint,
+            &send_endpoint,
+            &token_data,
+            "agent-id",
+            "message",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        let token_queries = captured.token_queries.lock().unwrap();
+        assert_eq!(token_queries.len(), 2);
+        assert_eq!(token_queries[0].get("corpid"), Some(&corp_id));
+        assert_eq!(token_queries[0].get("corpsecret"), Some(&corp_secret));
+        let send_queries = captured.send_queries.lock().unwrap();
+        assert_eq!(send_queries.len(), 1);
+        assert_eq!(
+            send_queries[0].get("access_token").map(String::as_str),
+            Some("access-token")
+        );
+        assert_eq!(error, "WeChat token request was rejected");
+        for secret in [
+            corp_id.as_str(),
+            corp_secret.as_str(),
+            "sentinel+corp%26id",
+            "sentinel+secret%26value",
+        ] {
+            assert!(!error.contains(secret));
+        }
     }
 }

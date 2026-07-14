@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::notifier::{Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{redact_secrets, send_with_retry, Event, HostStat, NOTIFIER_HANDLE};
 
 const KIND: &str = "bark";
 
@@ -137,17 +137,20 @@ impl Bark {
             .cloned()
             .ok_or_else(|| anyhow!("notification runtime is unavailable"))?;
         let http_client = self.http_client.clone();
+        let secrets = [
+            push_url.clone(),
+            config.server.clone(),
+            config.device_key.clone(),
+            config.url.clone(),
+        ];
 
         handle.spawn(async move {
-            match http_client
-                .post(&push_url)
-                .timeout(Duration::from_secs(timeout))
-                .json(&payload)
-                .send()
-                .await
-            {
-                Ok(resp) => info!("bark send message status => {}", resp.status()),
-                Err(_) => error!("bark send message failed"),
+            match deliver_bark(&http_client, &push_url, timeout, &payload).await {
+                Ok(()) => info!("bark notification sent"),
+                Err(err) => error!(
+                    "bark notification failed: {}",
+                    redact_secrets(&err.to_string(), &secrets)
+                ),
             }
         });
 
@@ -184,6 +187,40 @@ impl crate::notifier::Notifier for Bark {
     fn notify_test(&self) -> Result<()> {
         let config = crate::admin::effective_bark_config(self.config);
         self.send_with_config(&config, "❗ServerStatus test msg".to_string())
+    }
+}
+
+async fn deliver_bark(
+    http_client: &reqwest::Client,
+    endpoint: &str,
+    timeout: u64,
+    payload: &HashMap<String, String>,
+) -> Result<()> {
+    let response = send_with_retry(|| {
+        http_client
+            .post(endpoint)
+            .timeout(Duration::from_secs(timeout))
+            .json(payload)
+            .send()
+    })
+    .await?;
+    let status = response.status();
+    let body = response.text().await.map_err(|_| anyhow!("invalid Bark response"))?;
+    validate_bark_response(status, &body)
+}
+
+fn validate_bark_response(status: reqwest::StatusCode, body: &str) -> Result<()> {
+    if !status.is_success() {
+        return Err(anyhow!("Bark request failed with HTTP status {}", status.as_u16()));
+    }
+    let response: serde_json::Value = serde_json::from_str(body).map_err(|_| anyhow!("invalid Bark response"))?;
+    let code = response.get("code").ok_or_else(|| anyhow!("invalid Bark response"))?;
+    let accepted = code.as_i64().is_some_and(|value| value == 0 || value == 200)
+        || code.as_str().is_some_and(|value| value == "0" || value == "200");
+    if accepted {
+        Ok(())
+    } else {
+        Err(anyhow!("Bark provider rejected notification"))
     }
 }
 
@@ -241,9 +278,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
     let rendered = environment
         .get_template("bark")
         .map_err(|_| anyhow!("invalid Bark template"))?
-        .render(
-            context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info),
-        )
+        .render(context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info))
         .map_err(|_| anyhow!("failed to render Bark template"))?;
     Ok(rendered
         .lines()
@@ -281,13 +316,9 @@ mod tests {
         }));
         let notifier = Bark::new(config);
 
-        let error = crate::notifier::Notifier::notify(
-            &notifier,
-            &Event::NodeUp,
-            &HostStat::default(),
-        )
-        .unwrap_err()
-        .to_string();
+        let error = crate::notifier::Notifier::notify(&notifier, &Event::NodeUp, &HostStat::default())
+            .unwrap_err()
+            .to_string();
 
         assert_eq!(error, "invalid Bark template");
         assert!(!error.contains("sentinel-template-secret"));
@@ -330,7 +361,10 @@ mod tests {
         let (endpoint, payload, _) = prepare_delivery(&config, "body".into()).unwrap();
 
         assert_eq!(endpoint, "https://api.day.app/push");
-        assert_eq!(payload.get("device_key").map(String::as_str), Some("abcdefghijklmnopqrstuv"));
+        assert_eq!(
+            payload.get("device_key").map(String::as_str),
+            Some("abcdefghijklmnopqrstuv")
+        );
     }
 
     #[test]
@@ -345,6 +379,18 @@ mod tests {
         let (endpoint, payload, _) = prepare_delivery(&config, "body".into()).unwrap();
 
         assert_eq!(endpoint, "https://bark.example/push");
-        assert_eq!(payload.get("device_key").map(String::as_str), Some("separate-device-key"));
+        assert_eq!(
+            payload.get("device_key").map(String::as_str),
+            Some("separate-device-key")
+        );
+    }
+
+    #[test]
+    fn bark_response_requires_http_success_and_provider_success_code() {
+        for body in [r#"{"code":0}"#, r#"{"code":200}"#, r#"{"code":"200"}"#] {
+            assert!(validate_bark_response(reqwest::StatusCode::OK, body).is_ok());
+        }
+        assert!(validate_bark_response(reqwest::StatusCode::OK, r#"{"code":400}"#).is_err());
+        assert!(validate_bark_response(reqwest::StatusCode::SERVICE_UNAVAILABLE, r#"{"code":200}"#,).is_err());
     }
 }
