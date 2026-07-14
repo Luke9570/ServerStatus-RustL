@@ -115,20 +115,25 @@ async fn deliver_wechat(
             query.append_pair(name, value);
         }
     }
-    let token_response = send_with_retry(|| {
-        http_client
-            .get(token_url.clone())
-            .timeout(Duration::from_secs(5))
-            .send()
-    })
+    let token = send_with_retry(
+        || {
+            http_client
+                .get(token_url.clone())
+                .timeout(Duration::from_secs(5))
+                .send()
+        },
+        |response| async move {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .map_err(anyhow::Error::new)
+                .map_err(|error| error.context("invalid WeChat token response"))?;
+            parse_token_response(status, &body)
+        },
+    )
     .await
     .map_err(|error| anyhow!(redact_secrets(&error.to_string(), &query_secrets)))?;
-    let token_status = token_response.status();
-    let token_body = token_response
-        .text()
-        .await
-        .map_err(|_| anyhow!("invalid WeChat token response"))?;
-    let token = parse_token_response(token_status, &token_body)?;
 
     let send_url = format!("{send_endpoint}?access_token={token}");
     let send_data = serde_json::json!({
@@ -140,20 +145,25 @@ async fn deliver_wechat(
         },
         "safe": 0
     });
-    let send_response = send_with_retry(|| {
-        http_client
-            .post(&send_url)
-            .timeout(Duration::from_secs(5))
-            .json(&send_data)
-            .send()
-    })
-    .await?;
-    let send_status = send_response.status();
-    let send_body = send_response
-        .text()
-        .await
-        .map_err(|_| anyhow!("invalid WeChat send response"))?;
-    validate_send_response(send_status, &send_body)
+    send_with_retry(
+        || {
+            http_client
+                .post(&send_url)
+                .timeout(Duration::from_secs(5))
+                .json(&send_data)
+                .send()
+        },
+        |response| async move {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .map_err(anyhow::Error::new)
+                .map_err(|error| error.context("invalid WeChat send response"))?;
+            validate_send_response(status, &body)
+        },
+    )
+    .await
 }
 
 fn parse_token_response(status: reqwest::StatusCode, body: &str) -> Result<String> {

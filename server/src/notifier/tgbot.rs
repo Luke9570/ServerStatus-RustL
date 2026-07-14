@@ -91,20 +91,25 @@ struct TelegramResponse {
 }
 
 async fn deliver_telegram(http_client: &reqwest::Client, endpoint: &str, data: &HashMap<&str, String>) -> Result<()> {
-    let response = send_with_retry(|| {
-        http_client
-            .post(endpoint)
-            .timeout(Duration::from_secs(5))
-            .json(data)
-            .send()
-    })
-    .await?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|_| anyhow!("invalid Telegram response"))?;
-    validate_telegram_response(status, &body)
+    send_with_retry(
+        || {
+            http_client
+                .post(endpoint)
+                .timeout(Duration::from_secs(5))
+                .json(data)
+                .send()
+        },
+        |response| async move {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .map_err(anyhow::Error::new)
+                .map_err(|error| error.context("invalid Telegram response"))?;
+            validate_telegram_response(status, &body)
+        },
+    )
+    .await
 }
 
 fn validate_telegram_response(status: reqwest::StatusCode, body: &str) -> Result<()> {

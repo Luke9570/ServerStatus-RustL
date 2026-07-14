@@ -24,7 +24,7 @@ pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
 }
 
 fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
-    error.is_request() || error.is_connect() || error.is_timeout() || error.is_body()
+    error.is_request() || error.is_connect() || error.is_timeout() || error.is_body() || error.is_decode()
 }
 
 pub(crate) fn redact_secrets<S>(message: &str, secrets: &[S]) -> String
@@ -41,22 +41,32 @@ where
     })
 }
 
-pub(crate) async fn send_with_retry<F, Fut>(request: F) -> Result<Response>
+pub(crate) async fn send_with_retry<F, Fut, V, VFut, T>(request: F, validate: V) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = reqwest::Result<Response>>,
+    V: FnMut(Response) -> VFut,
+    VFut: Future<Output = Result<T>>,
 {
-    send_with_retry_delays(request, RETRY_DELAYS).await
+    send_with_retry_delays(request, validate, RETRY_DELAYS).await
 }
 
-async fn send_with_retry_delays<F, Fut>(mut request: F, delays: [Duration; 2]) -> Result<Response>
+async fn send_with_retry_delays<F, Fut, V, VFut, T>(mut request: F, mut validate: V, delays: [Duration; 2]) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = reqwest::Result<Response>>,
+    V: FnMut(Response) -> VFut,
+    VFut: Future<Output = Result<T>>,
 {
     for attempt in 0..=delays.len() {
         match request().await {
-            Ok(response) if response.status().is_success() => return Ok(response),
+            Ok(response) if response.status().is_success() => match validate(response).await {
+                Ok(value) => return Ok(value),
+                Err(error) if is_retryable_validation_error(&error) && attempt < delays.len() => {
+                    sleep(delays[attempt]).await;
+                }
+                Err(error) => return Err(error),
+            },
             Ok(response) if is_retryable_status(response.status()) && attempt < delays.len() => {
                 sleep(delays[attempt]).await;
             }
@@ -77,6 +87,12 @@ where
     }
 
     Err(anyhow!("notification delivery failed"))
+}
+
+fn is_retryable_validation_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(is_retryable_transport_error)
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -162,6 +178,7 @@ mod tests {
         Arc,
     };
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct CountingNotifier(Arc<AtomicUsize>);
 
@@ -279,15 +296,38 @@ mod tests {
         format!("http://{address}/")
     }
 
+    async fn truncated_response_endpoint(attempts: Arc<AtomicUsize>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0_u8; 1024];
+                let _ = socket.read(&mut request).await;
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\nConnection: close\r\n\r\n{\"ok\":",
+                    )
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        format!("http://{address}/")
+    }
+
     #[tokio::test]
     async fn transient_http_failures_retry_at_most_three_attempts() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let url = local_endpoint(Arc::clone(&attempts), |state| Box::pin(transient_then_success(state))).await;
         let client = reqwest::Client::new();
 
-        let response = send_with_retry_delays(|| client.post(&url).send(), [Duration::ZERO, Duration::ZERO])
-            .await
-            .unwrap();
+        let response = send_with_retry_delays(
+            || client.post(&url).send(),
+            |response| async move { Ok(response) },
+            [Duration::ZERO, Duration::ZERO],
+        )
+        .await
+        .unwrap();
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
@@ -299,10 +339,14 @@ mod tests {
         let url = local_endpoint(Arc::clone(&attempts), |state| Box::pin(permanent_failure(state))).await;
         let client = reqwest::Client::new();
 
-        let error = send_with_retry_delays(|| client.post(&url).send(), [Duration::ZERO, Duration::ZERO])
-            .await
-            .unwrap_err()
-            .to_string();
+        let error = send_with_retry_delays(
+            || client.post(&url).send(),
+            |response| async move { Ok(response) },
+            [Duration::ZERO, Duration::ZERO],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
 
         assert_eq!(error, "notification request failed with HTTP status 400");
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
@@ -323,6 +367,7 @@ mod tests {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 client.post(&url).send()
             },
+            |response| async move { Ok(response) },
             [Duration::ZERO, Duration::ZERO],
         )
         .await
@@ -330,6 +375,32 @@ mod tests {
         .to_string();
 
         assert_eq!(error, "notification transport failed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert!(!error.contains(&url));
+    }
+
+    #[tokio::test]
+    async fn response_body_transport_failures_are_retried_by_shared_helper() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let url = truncated_response_endpoint(Arc::clone(&attempts)).await;
+        let client = reqwest::Client::new();
+
+        let error = send_with_retry_delays(
+            || client.post(&url).send(),
+            |response| async move {
+                response
+                    .text()
+                    .await
+                    .map_err(anyhow::Error::new)
+                    .map_err(|error| error.context("invalid provider response"))
+            },
+            [Duration::ZERO, Duration::ZERO],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(error, "invalid provider response");
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
         assert!(!error.contains(&url));
     }

@@ -196,17 +196,25 @@ async fn deliver_bark(
     timeout: u64,
     payload: &HashMap<String, String>,
 ) -> Result<()> {
-    let response = send_with_retry(|| {
-        http_client
-            .post(endpoint)
-            .timeout(Duration::from_secs(timeout))
-            .json(payload)
-            .send()
-    })
-    .await?;
-    let status = response.status();
-    let body = response.text().await.map_err(|_| anyhow!("invalid Bark response"))?;
-    validate_bark_response(status, &body)
+    send_with_retry(
+        || {
+            http_client
+                .post(endpoint)
+                .timeout(Duration::from_secs(timeout))
+                .json(payload)
+                .send()
+        },
+        |response| async move {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .map_err(anyhow::Error::new)
+                .map_err(|error| error.context("invalid Bark response"))?;
+            validate_bark_response(status, &body)
+        },
+    )
+    .await
 }
 
 fn validate_bark_response(status: reqwest::StatusCode, body: &str) -> Result<()> {

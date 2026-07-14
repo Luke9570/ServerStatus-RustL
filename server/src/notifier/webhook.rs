@@ -256,21 +256,24 @@ impl crate::notifier::Notifier for Webhook {
 }
 
 async fn deliver_legacy_receiver(http_client: &reqwest::Client, receiver: &Receiver, content: String) -> Result<()> {
-    send_with_retry(|| {
-        let mut request = http_client
-            .post(&receiver.url)
-            .timeout(Duration::from_secs(receiver.timeout.into()))
-            .body(content.clone());
-        for (name, value) in &receiver.headers {
-            request = request.header(name, value);
-        }
-        if let (Some(user), Some(password)) = (receiver.username.as_ref(), receiver.password.as_ref()) {
-            if !user.is_empty() && !password.is_empty() {
-                request = request.basic_auth(user, Some(password));
+    send_with_retry(
+        || {
+            let mut request = http_client
+                .post(&receiver.url)
+                .timeout(Duration::from_secs(receiver.timeout.into()))
+                .body(content.clone());
+            for (name, value) in &receiver.headers {
+                request = request.header(name, value);
             }
-        }
-        request.send()
-    })
+            if let (Some(user), Some(password)) = (receiver.username.as_ref(), receiver.password.as_ref()) {
+                if !user.is_empty() && !password.is_empty() {
+                    request = request.basic_auth(user, Some(password));
+                }
+            }
+            request.send()
+        },
+        |_| async { Ok(()) },
+    )
     .await?;
     Ok(())
 }
@@ -280,19 +283,22 @@ async fn deliver_structured_receiver(
     receiver: &crate::admin::StructuredWebhookReceiver,
     content: String,
 ) -> Result<()> {
-    send_with_retry(|| {
-        let mut request = http_client
-            .post(&receiver.url)
-            .timeout(Duration::from_secs(receiver.timeout.into()))
-            .body(content.clone());
-        for header in &receiver.headers {
-            request = request.header(&header.name, &header.value);
-        }
-        if !receiver.username.is_empty() && !receiver.password.is_empty() {
-            request = request.basic_auth(&receiver.username, Some(&receiver.password));
-        }
-        request.send()
-    })
+    send_with_retry(
+        || {
+            let mut request = http_client
+                .post(&receiver.url)
+                .timeout(Duration::from_secs(receiver.timeout.into()))
+                .body(content.clone());
+            for header in &receiver.headers {
+                request = request.header(&header.name, &header.value);
+            }
+            if !receiver.username.is_empty() && !receiver.password.is_empty() {
+                request = request.basic_auth(&receiver.username, Some(&receiver.password));
+            }
+            request.send()
+        },
+        |_| async { Ok(()) },
+    )
     .await?;
     Ok(())
 }
@@ -422,7 +428,10 @@ mod tests {
         routing::post,
         Router,
     };
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     #[derive(Default)]
     struct CapturedRequest {
@@ -459,6 +468,24 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         format!("http://{address}/hook")
+    }
+
+    async fn delayed_response(State(attempts): State<Arc<AtomicUsize>>) -> StatusCode {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        StatusCode::NO_CONTENT
+    }
+
+    async fn delayed_endpoint(attempts: Arc<AtomicUsize>) -> String {
+        let app = Router::new()
+            .route("/sentinel-timeout-secret", post(delayed_response))
+            .with_state(attempts);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}/sentinel-timeout-secret")
     }
 
     #[test]
@@ -640,5 +667,27 @@ mod tests {
         assert!(captured.authorization.starts_with("Basic "));
         assert_eq!(captured.custom_header, "sentinel-header-secret");
         assert_eq!(captured.body, "rendered-body");
+    }
+
+    #[tokio::test]
+    async fn structured_webhook_timeout_is_generic_and_retried_three_times() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let receiver = crate::admin::StructuredWebhookReceiver {
+            enabled: true,
+            url: delayed_endpoint(Arc::clone(&attempts)).await,
+            timeout: 1,
+            body_tpl: "unused".into(),
+            ..Default::default()
+        };
+
+        let error = deliver_structured_receiver(&reqwest::Client::new(), &receiver, "body".into())
+            .await
+            .unwrap_err()
+            .to_string();
+        let sanitized = sanitize_webhook_error(&error, &structured_receiver_secrets(&receiver));
+
+        assert_eq!(sanitized, "notification transport failed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert!(!sanitized.contains("sentinel-timeout-secret"));
     }
 }
