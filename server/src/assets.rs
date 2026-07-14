@@ -83,4 +83,24 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn admin_preserves_alert_notification_selection_mode() {
+        let admin_js = Asset::get("/static/js/admin.js").expect("embedded admin JavaScript");
+        let admin_js = std::str::from_utf8(admin_js.data.as_ref()).expect("UTF-8 admin JavaScript");
+
+        for contract in [
+            "function notificationSelectionForRule(rule)",
+            "notificationSelection: notificationSelectionForRule(rule)",
+            "function updateAlertRuleNotificationSelection()",
+            "const unavailable = [...selection.values].filter((id) => !enabledSet.has(id));",
+            "function alertRuleNotificationsForApply()",
+            "const notifications = alertRuleNotificationsForApply();",
+        ] {
+            assert!(
+                admin_js.contains(contract),
+                "admin JavaScript should preserve alert notification mode: {contract}"
+            );
+        }
+    }
 }

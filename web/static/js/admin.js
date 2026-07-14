@@ -1294,10 +1294,7 @@
     if (!currentPicker) {
       return;
     }
-    const selected = checkedValues(".js-rule-notifications");
-    const visibleMethodCount = currentPicker.querySelectorAll(".js-rule-notifications input").length;
-    const notifications = selected.length === visibleMethodCount ? notificationMethods().map((method) => method.id) : selected;
-    currentPicker.replaceWith(notificationMethodPicker({ notifications }));
+    currentPicker.replaceWith(notificationMethodPicker(state.editor.notificationSelection));
   }
 
   function alertRuleTargetCell(rule) {
@@ -2003,6 +2000,44 @@
     return values.filter((id) => enabledSet.has(id));
   }
 
+  function notificationSelectionForRule(rule) {
+    const notifications = alertRuleNotifications(rule);
+    return {
+      mode: notifications.length ? "explicit" : "all",
+      values: new Set(notifications),
+    };
+  }
+
+  function updateAlertRuleNotificationSelection() {
+    const selection = state.editor?.notificationSelection;
+    if (!selection) {
+      return;
+    }
+    const enabledSet = new Set(notificationMethods().map((method) => method.id));
+    if (selection.mode === "all") {
+      selection.mode = "explicit";
+      selection.values = new Set(checkedValues(".js-rule-notifications"));
+    } else {
+      const unavailable = [...selection.values].filter((id) => !enabledSet.has(id));
+      selection.values = new Set([...unavailable, ...checkedValues(".js-rule-notifications")]);
+    }
+    $(".js-rule-notifications input")?.setCustomValidity("");
+  }
+
+  function alertRuleNotificationsForApply() {
+    const selection = state.editor?.notificationSelection;
+    if (!selection || selection.mode === "all") {
+      return [];
+    }
+    if (!selection.values.size) {
+      const firstMethod = $(".js-rule-notifications input");
+      firstMethod?.setCustomValidity("请至少选择一种通知方式；留空表示全部");
+      firstMethod?.reportValidity();
+      return null;
+    }
+    return [...selection.values];
+  }
+
   function notificationTagsForRule(rule) {
     const active = activeAlertRuleNotifications(rule);
     if (active.length) {
@@ -2014,22 +2049,24 @@
     return wrap;
   }
 
-  function notificationMethodPicker(rule) {
+  function notificationMethodPicker(selection) {
     const methods = notificationMethods();
     if (!methods.length) {
       const notice = el("div", "editor-notice wide", "请先配置并启用通知方式");
       notice.dataset.ruleNotifications = "1";
       return notice;
     }
+    const selected = selection.mode === "all" ? methods.map((method) => method.id) : [...selection.values];
     const picker = multiCheck(
       "通知方式（只显示已启用，留空表示全部）",
       "js-rule-notifications",
       methods,
-      activeAlertRuleNotifications(rule),
+      selected,
       (item) => item.id,
       (item) => item.name,
     );
     picker.dataset.ruleNotifications = "1";
+    picker.addEventListener("change", updateAlertRuleNotificationSelection);
     return picker;
   }
 
@@ -2276,7 +2313,12 @@
           server_groups: [],
           servers: [],
         };
-    state.editor = { type: "alert-rule", id: rule.id, isNew: !id };
+    state.editor = {
+      type: "alert-rule",
+      id: rule.id,
+      isNew: !id,
+      notificationSelection: notificationSelectionForRule(rule),
+    };
     openDialog(id ? "编辑告警规则" : "新建告警规则", rule.id);
     if (id) {
       $("#editor-delete").hidden = false;
@@ -2303,7 +2345,7 @@
     );
     $("#editor-body").append(
       grid,
-      notificationMethodPicker(rule),
+      notificationMethodPicker(state.editor.notificationSelection),
       multiCheck(
         "应用分组（留空表示不限定）",
         "js-rule-server-groups",
@@ -2372,6 +2414,10 @@
       repeatInput.reportValidity();
       return false;
     }
+    const notifications = alertRuleNotificationsForApply();
+    if (notifications === null) {
+      return false;
+    }
     rules.push({
       id: editor.id,
       name: $(".js-rule-name").value.trim() || editor.id,
@@ -2381,7 +2427,7 @@
       duration: Number($(".js-rule-duration").value || 120),
       repeat_interval: Number($(".js-rule-repeat").value || 3600),
       notification_group: "",
-      notifications: checkedValues(".js-rule-notifications"),
+      notifications,
       server_groups: checkedValues(".js-rule-server-groups"),
       servers: checkedValues(".js-rule-servers"),
     });
