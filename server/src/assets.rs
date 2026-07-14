@@ -66,3 +66,21 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Asset;
+
+    #[test]
+    fn admin_contains_all_notification_modules() {
+        let admin_html = Asset::get("/admin.html").expect("embedded admin HTML");
+        let admin_html = std::str::from_utf8(admin_html.data.as_ref()).expect("UTF-8 admin HTML");
+
+        for id in ["wechat-save", "email-save", "webhook-save", "log-save"] {
+            assert!(
+                admin_html.contains(&format!("id=\"{id}\"")),
+                "admin HTML should include #{id}"
+            );
+        }
+    }
+}

@@ -20,12 +20,20 @@
     localDirty: {
       tg: false,
       bark: false,
+      wechat: false,
+      email: false,
+      webhook: false,
+      log: false,
       access: false,
       expire: false,
     },
     localBaseline: {
       tg: "",
       bark: "",
+      wechat: "",
+      email: "",
+      webhook: "",
+      log: "",
       access: "",
       expire: "",
     },
@@ -35,7 +43,7 @@
     servers: ["服务器", "节点列表、备注、账单和展示排序"],
     "server-groups": ["服务器分组", "按用途归类节点，不参与 agent 接入认证"],
     "alert-rules": ["告警规则", "离线、CPU、内存、硬盘和负载持续触发提醒"],
-    notifications: ["通知方式", "Telegram 与 Bark 通知通道"],
+    notifications: ["通知方式", "配置通知通道并选择告警投递方式"],
     settings: ["设置", "接入地址、到期提醒和后台基础设置"],
   };
 
@@ -243,6 +251,10 @@
 
   function setSecretInput(selector, configured, clearFlag = false) {
     const input = $(selector);
+    setSecretInputState(input, configured, clearFlag);
+  }
+
+  function setSecretInputState(input, configured, clearFlag = false) {
     if (!input) {
       return;
     }
@@ -328,6 +340,20 @@
     }
   }
 
+  function toggleSecretVisibility(selector) {
+    const input = $(selector);
+    if (!input) {
+      return;
+    }
+    const reveal = document.getElementById(`${input.id}-reveal`);
+    const nextVisible = input.type === "password";
+    input.type = nextVisible ? "text" : "password";
+    if (reveal) {
+      setIconButtonIcon(reveal, nextVisible ? "隐藏内容" : "显示内容", nextVisible ? "eye-off" : "eye");
+      reveal.setAttribute("aria-pressed", nextVisible ? "true" : "false");
+    }
+  }
+
   function localButton(scope) {
     return $(`#${scope}-save`);
   }
@@ -368,6 +394,18 @@
       }
       if (scope === "bark") {
         return stableJson(collectBarkSettings());
+      }
+      if (scope === "wechat") {
+        return stableJson(collectWechatSettings());
+      }
+      if (scope === "email") {
+        return stableJson(collectEmailSettings());
+      }
+      if (scope === "webhook") {
+        return stableJson(collectWebhookSettings());
+      }
+      if (scope === "log") {
+        return stableJson(collectLogSettings());
       }
       if (scope === "access") {
         return stableJson(collectAccessSettings());
@@ -418,6 +456,10 @@
       expire_notify: state.settings.expire_notify,
       tgbot: state.settings.tgbot,
       bark: state.settings.bark,
+      wechat: state.settings.wechat,
+      email: state.settings.email,
+      webhook: state.settings.webhook,
+      log: state.settings.log,
       ...overrides,
     };
   }
@@ -634,6 +676,7 @@
     svg.setAttribute("focusable", "false");
     const paths = {
       refresh: ["M21 12a9 9 0 0 1-15.5 6.2", "M3 12A9 9 0 0 1 18.5 5.8", "M3 18v-6h6", "M21 6v6h-6"],
+      plus: ["M12 5v14", "M5 12h14"],
       eye: [
         "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z",
         "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
@@ -1261,6 +1304,10 @@
   function renderNotifications() {
     renderTgbotNotification();
     renderBarkNotification();
+    renderWechatNotification();
+    renderEmailNotification();
+    renderWebhookNotification();
+    renderLogNotification();
   }
 
   function renderTgbotNotification() {
@@ -1291,6 +1338,200 @@
     $("#bark-expire").value = bark.expire_tpl || "";
     $("#bark-health").value = bark.health_tpl || "";
     resetLocalBaseline("bark", "");
+  }
+
+  function renderWechatNotification() {
+    const base = state.config?.wechat || {};
+    const saved = state.settings?.wechat || {};
+    const wechat = { ...base, ...saved };
+    const secretConfigured = saved.clear_corp_secret
+      ? false
+      : Boolean(saved.corp_secret_configured || base.corp_secret_configured);
+    $("#wechat-enabled").checked = Boolean(wechat.enabled);
+    $("#wechat-corp-id").value = wechat.corp_id || "";
+    setSecretInput("#wechat-corp-secret", secretConfigured, Boolean(saved.clear_corp_secret));
+    $("#wechat-agent-id").value = wechat.agent_id || "";
+    $("#wechat-title").value = wechat.title || "";
+    $("#wechat-online").value = wechat.online_tpl || "";
+    $("#wechat-offline").value = wechat.offline_tpl || "";
+    $("#wechat-expire").value = wechat.expire_tpl || "";
+    $("#wechat-health").value = wechat.health_tpl || "";
+    resetLocalBaseline("wechat", "");
+  }
+
+  function renderEmailNotification() {
+    const base = state.config?.email || {};
+    const saved = state.settings?.email || {};
+    const email = { ...base, ...saved };
+    const passwordConfigured = saved.clear_password
+      ? false
+      : Boolean(saved.password_configured || base.password_configured);
+    $("#email-enabled").checked = Boolean(email.enabled);
+    $("#email-server").value = email.server || "";
+    $("#email-username").value = email.username || "";
+    setSecretInput("#email-password", passwordConfigured, Boolean(saved.clear_password));
+    $("#email-to").value = email.to || "";
+    $("#email-subject").value = email.subject || "";
+    $("#email-title").value = email.title || "";
+    $("#email-online").value = email.online_tpl || "";
+    $("#email-offline").value = email.offline_tpl || "";
+    $("#email-expire").value = email.expire_tpl || "";
+    $("#email-health").value = email.health_tpl || "";
+    resetLocalBaseline("email", "");
+  }
+
+  function renderWebhookNotification() {
+    const base = state.config?.webhook || {};
+    const saved = state.settings?.webhook;
+    const webhook = saved || { enabled: Boolean(base.enabled), receivers: [] };
+    $("#webhook-enabled").checked = Boolean(webhook.enabled);
+    text(
+      "#webhook-source",
+      saved
+        ? "当前使用后台结构化 Webhook 覆盖配置。"
+        : base.legacy_configured
+          ? "当前使用配置文件中的旧版 Webhook；保存将切换为结构化接收器。"
+          : "尚未配置 Webhook 接收器。",
+    );
+    const receivers = (webhook.receivers || []).map((receiver) => ({
+      ...receiver,
+      id: receiver.id || stableId("webhook"),
+    }));
+    $("#webhook-receivers").replaceChildren(...receivers.map(webhookReceiverRow));
+    resetLocalBaseline("webhook", "");
+  }
+
+  function renderLogNotification() {
+    const base = state.config?.log || {};
+    const saved = state.settings?.log || {};
+    const log = { ...base, ...saved };
+    $("#log-enabled").checked = Boolean(log.enabled);
+    $("#log-template").value = log.tpl || "";
+    resetLocalBaseline("log", "");
+  }
+
+  function webhookSecretField(id, className, configured, clearFlag, label) {
+    const wrap = el("div", "secret-field");
+    const secret = input(`secret-input ${className}`, "", "password");
+    secret.id = id;
+    secret.autocomplete = "off";
+    const reveal = iconButton(`显示 ${label}`, "eye");
+    reveal.id = `${id}-reveal`;
+    reveal.classList.add("secret-reveal");
+    reveal.addEventListener("click", () => toggleSecretVisibility(`#${id}`));
+    const clear = iconButton(`清空 ${label}`, "trash");
+    clear.id = `${id}-clear`;
+    clear.classList.add("secret-clear");
+    clear.addEventListener("click", () => toggleSecretClear(`#${id}`));
+    wrap.append(secret, reveal, clear);
+    setSecretInputState(secret, configured, clearFlag);
+    return wrap;
+  }
+
+  function webhookHeaderRow(receiverId, header = {}) {
+    const row = el("div", "webhook-header-row");
+    const headerId = stableId("webhook-header");
+    const name = input("js-webhook-header-name", header.name || "");
+    name.placeholder = "Header 名称";
+    name.autocomplete = "off";
+    const value = webhookSecretField(
+      `${receiverId}-${headerId}-value`,
+      "js-webhook-header-value",
+      Boolean(header.value_configured),
+      Boolean(header.clear_value),
+      "Header 值",
+    );
+    const remove = iconButton("删除 Header", "trash");
+    remove.classList.add("danger-icon");
+    remove.addEventListener("click", () => {
+      row.remove();
+      refreshLocalDirty("webhook");
+    });
+    row.append(name, value, remove);
+    return row;
+  }
+
+  function webhookReceiverRow(receiver = {}) {
+    const receiverId = receiver.id || stableId("webhook");
+    const row = el("section", "webhook-receiver");
+    row.dataset.receiverId = receiverId;
+
+    const head = el("div", "webhook-receiver-head");
+    const enabled = checkbox(receiver.enabled);
+    enabled.className = "js-webhook-receiver-enabled";
+    const enabledLabel = el("label", "switch-row");
+    enabledLabel.append(enabled, document.createTextNode("启用接收器"));
+    const identity = el("div", "webhook-receiver-identity");
+    identity.append(el("strong", "", receiver.name || "Webhook 接收器"), el("span", "muted", receiverId));
+    const remove = iconButton("删除 Webhook 接收器", "trash");
+    remove.classList.add("danger-icon");
+    remove.addEventListener("click", () => {
+      row.remove();
+      refreshLocalDirty("webhook");
+    });
+    head.append(identity, enabledLabel, remove);
+
+    const fields = el("div", "field-grid webhook-field-grid");
+    const name = input("js-webhook-name", receiver.name || "");
+    name.placeholder = "告警接收器";
+    const url = webhookSecretField(
+      `webhook-${receiverId}-url`,
+      "js-webhook-url",
+      Boolean(receiver.url_configured),
+      Boolean(receiver.clear_url),
+      "Webhook URL",
+    );
+    const username = input("js-webhook-username", receiver.username || "");
+    username.autocomplete = "off";
+    const password = webhookSecretField(
+      `webhook-${receiverId}-password`,
+      "js-webhook-password",
+      Boolean(receiver.password_configured),
+      Boolean(receiver.clear_password),
+      "Webhook 密码",
+    );
+    const timeout = input("js-webhook-timeout", receiver.timeout || 5, "number");
+    timeout.min = "1";
+    timeout.max = "60";
+    timeout.step = "1";
+    const body = document.createElement("textarea");
+    body.className = "js-webhook-body";
+    body.rows = 4;
+    body.value = receiver.body_tpl || "";
+    fields.append(
+      field("名称", name),
+      field("URL", url),
+      field("Basic Auth 用户名", username),
+      field("Basic Auth 密码", password),
+      field("超时（秒）", timeout),
+      field("请求体模板", body),
+    );
+
+    const headers = el("div", "webhook-headers");
+    const headerTitle = el("div", "webhook-headers-head");
+    headerTitle.append(el("span", "option-label", "HTTP Headers"));
+    const addHeader = iconButton("添加 Header", "plus");
+    addHeader.addEventListener("click", () => {
+      headers.append(webhookHeaderRow(receiverId));
+      refreshLocalDirty("webhook");
+    });
+    headerTitle.append(addHeader);
+    headers.append(headerTitle, ...(receiver.headers || []).map((header) => webhookHeaderRow(receiverId, header)));
+
+    row.append(head, fields, headers);
+    return row;
+  }
+
+  function addWebhookReceiver() {
+    $("#webhook-receivers").append(
+      webhookReceiverRow({
+        id: stableId("webhook"),
+        enabled: true,
+        timeout: 5,
+        headers: [],
+      }),
+    );
+    refreshLocalDirty("webhook");
   }
 
   function renderSettings() {
@@ -1687,7 +1928,14 @@
   }
 
   function notificationName(id) {
-    return { tg: "Telegram", bark: "Bark" }[id] || id;
+    return {
+      tg: "Telegram",
+      bark: "Bark",
+      wechat: "企业微信",
+      email: "Email",
+      webhook: "Webhook",
+      log: "本地日志",
+    }[id] || id;
   }
 
   function notificationMethods() {
@@ -1698,15 +1946,16 @@
     return [
       { id: "tg", name: "Telegram" },
       { id: "bark", name: "Bark" },
+      { id: "wechat", name: "企业微信" },
+      { id: "email", name: "Email" },
+      { id: "webhook", name: "Webhook" },
+      { id: "log", name: "本地日志" },
     ];
   }
 
   function notificationEnabled(id) {
-    const config = {
-      tg: state.settings?.tgbot || state.config?.tgbot || {},
-      bark: state.settings?.bark || state.config?.bark || {},
-    }[id];
-    return Boolean(config?.enabled);
+    return Array.isArray(state.config?.configured_notification_methods)
+      && state.config.configured_notification_methods.includes(id);
   }
 
   function alertRuleNotifications(rule) {
@@ -1741,7 +1990,7 @@
   function notificationMethodPicker(rule) {
     const methods = notificationMethods();
     if (!methods.length) {
-      const notice = el("div", "editor-notice wide", "尚未启用 Telegram 或 Bark，请先到「通知方式」页配置。");
+      const notice = el("div", "editor-notice wide", "请先配置并启用通知方式");
       return notice;
     }
     return multiCheck(
@@ -2350,6 +2599,72 @@
     };
   }
 
+  function collectWechatSettings() {
+    return {
+      enabled: $("#wechat-enabled").checked,
+      corp_id: $("#wechat-corp-id").value.trim(),
+      corp_secret: secretInputValue("#wechat-corp-secret"),
+      clear_corp_secret: secretClearValue("#wechat-corp-secret"),
+      agent_id: $("#wechat-agent-id").value.trim(),
+      title: $("#wechat-title").value,
+      online_tpl: $("#wechat-online").value,
+      offline_tpl: $("#wechat-offline").value,
+      expire_tpl: $("#wechat-expire").value,
+      health_tpl: $("#wechat-health").value,
+    };
+  }
+
+  function collectEmailSettings() {
+    return {
+      enabled: $("#email-enabled").checked,
+      server: $("#email-server").value.trim(),
+      username: $("#email-username").value.trim(),
+      password: secretInputValue("#email-password"),
+      clear_password: secretClearValue("#email-password"),
+      to: $("#email-to").value.trim(),
+      subject: $("#email-subject").value.trim(),
+      title: $("#email-title").value,
+      online_tpl: $("#email-online").value,
+      offline_tpl: $("#email-offline").value,
+      expire_tpl: $("#email-expire").value,
+      health_tpl: $("#email-health").value,
+    };
+  }
+
+  function collectWebhookSettings() {
+    const receivers = $$("#webhook-receivers .webhook-receiver").map((row) => ({
+      id: row.dataset.receiverId || stableId("webhook"),
+      name: row.querySelector(".js-webhook-name").value.trim(),
+      enabled: row.querySelector(".js-webhook-receiver-enabled").checked,
+      url: secretInputValue(`#webhook-${row.dataset.receiverId}-url`),
+      clear_url: secretClearValue(`#webhook-${row.dataset.receiverId}-url`),
+      username: row.querySelector(".js-webhook-username").value.trim(),
+      password: secretInputValue(`#webhook-${row.dataset.receiverId}-password`),
+      clear_password: secretClearValue(`#webhook-${row.dataset.receiverId}-password`),
+      timeout: Number(row.querySelector(".js-webhook-timeout").value || 5),
+      headers: [...row.querySelectorAll(".webhook-header-row")].map((headerRow) => {
+        const value = headerRow.querySelector(".js-webhook-header-value");
+        return {
+          name: headerRow.querySelector(".js-webhook-header-name").value.trim(),
+          value: secretInputValue(`#${value.id}`),
+          clear_value: secretClearValue(`#${value.id}`),
+        };
+      }),
+      body_tpl: row.querySelector(".js-webhook-body").value,
+    }));
+    return {
+      enabled: $("#webhook-enabled").checked,
+      receivers,
+    };
+  }
+
+  function collectLogSettings() {
+    return {
+      enabled: $("#log-enabled").checked,
+      tpl: $("#log-template").value,
+    };
+  }
+
   function barkServerContainsDeviceKey(server) {
     try {
       const url = new URL(server);
@@ -2385,6 +2700,70 @@
     }
     if (!tgbot.chat_id && !secretConfigured("#tg-chat")) {
       return "Telegram Chat ID 不能为空";
+    }
+    return "";
+  }
+
+  function validateWechatSettingsForTest(wechat) {
+    if (!wechat.enabled) {
+      return "请先勾选启用企业微信";
+    }
+    if (!wechat.corp_id) {
+      return "Corp ID 不能为空";
+    }
+    if (!wechat.corp_secret && !secretConfigured("#wechat-corp-secret")) {
+      return "Corp Secret 不能为空";
+    }
+    if (!wechat.agent_id) {
+      return "Agent ID 不能为空";
+    }
+    return "";
+  }
+
+  function validateEmailSettingsForTest(email) {
+    if (!email.enabled) {
+      return "请先勾选启用 Email";
+    }
+    if (!email.server || !email.username || !email.to) {
+      return "SMTP Server、发件人和收件人不能为空";
+    }
+    if (!email.password && !secretConfigured("#email-password")) {
+      return "SMTP Password 不能为空";
+    }
+    return "";
+  }
+
+  function validateWebhookSettingsForTest(webhook) {
+    if (!webhook.enabled) {
+      return "请先勾选启用结构化 Webhook";
+    }
+    const enabledRows = $$("#webhook-receivers .webhook-receiver").filter(
+      (row) => row.querySelector(".js-webhook-receiver-enabled").checked,
+    );
+    if (!enabledRows.length) {
+      return "请至少启用一个 Webhook 接收器";
+    }
+    for (const row of enabledRows) {
+      const receiver = webhook.receivers.find((item) => item.id === row.dataset.receiverId);
+      if (!receiver?.name || !receiver.body_tpl.trim()) {
+        return "启用的 Webhook 接收器需要名称和请求体模板";
+      }
+      if (!receiver.url && !secretConfigured(`#webhook-${receiver.id}-url`)) {
+        return "启用的 Webhook 接收器需要 URL";
+      }
+      if (!Number.isInteger(receiver.timeout) || receiver.timeout < 1 || receiver.timeout > 60) {
+        return "Webhook 超时必须在 1 到 60 秒之间";
+      }
+    }
+    return "";
+  }
+
+  function validateLogSettingsForTest(log) {
+    if (!log.enabled) {
+      return "请先勾选启用本地日志";
+    }
+    if (!log.tpl.trim()) {
+      return "日志模板不能为空";
     }
     return "";
   }
@@ -2483,32 +2862,81 @@
   }
 
   async function saveTgbotSettings() {
-    const tgbot = collectTgbotSettings();
-    const ok = await saveSettingsPayload(settingsPayloadFromState({ tgbot }), {
-      successMessage: "Telegram 已同步到后端",
-      messageTarget: "#tg-save-message",
-      render: "none",
-      busyButton: $("#tg-save"),
-    });
-    if (ok) {
-      renderTgbotNotification();
-      resetLocalBaseline("tg", "Telegram 已同步到后端");
-      renderAlertRules();
-    }
+    await saveNotificationModule("tg", "tgbot", collectTgbotSettings(), "Telegram");
   }
 
   async function saveBarkSettings() {
-    const bark = collectBarkSettings();
-    const ok = await saveSettingsPayload(settingsPayloadFromState({ bark }), {
-      successMessage: "Bark 已同步到后端",
-      messageTarget: "#bark-save-message",
+    await saveNotificationModule("bark", "bark", collectBarkSettings(), "Bark");
+  }
+
+  async function saveWechatSettings() {
+    await saveNotificationModule("wechat", "wechat", collectWechatSettings(), "企业微信");
+  }
+
+  async function saveEmailSettings() {
+    await saveNotificationModule("email", "email", collectEmailSettings(), "Email");
+  }
+
+  async function saveWebhookSettings() {
+    await saveNotificationModule("webhook", "webhook", collectWebhookSettings(), "Webhook");
+  }
+
+  async function saveLogSettings() {
+    await saveNotificationModule("log", "log", collectLogSettings(), "本地日志");
+  }
+
+  async function reloadNotificationState() {
+    const [config, settings] = await Promise.all([
+      getJson("/api/admin/config.json"),
+      getJson("/api/admin/settings"),
+    ]);
+    state.config = config;
+    state.settings = settings.data || {};
+    ensureSettings();
+    renderNotifications();
+    renderAlertRules();
+  }
+
+  async function saveNotificationModule(scope, key, value, label) {
+    const ok = await saveSettingsPayload(settingsPayloadFromState({ [key]: value }), {
+      successMessage: `${label} 已同步到后端`,
+      messageTarget: `#${scope}-save-message`,
       render: "none",
-      busyButton: $("#bark-save"),
+      busyButton: localButton(scope),
     });
-    if (ok) {
-      renderBarkNotification();
-      resetLocalBaseline("bark", "Bark 已同步到后端");
-      renderAlertRules();
+    if (!ok) {
+      return;
+    }
+    try {
+      await reloadNotificationState();
+      resetLocalBaseline(scope, `${label} 已同步到后端`);
+    } catch (err) {
+      const message = `${label} 已保存，但重新加载失败: ${err.message}`;
+      text(localMessage(scope), message);
+      showToast(message, "warn");
+    }
+  }
+
+  async function resetNotificationOverride(scope, key, label) {
+    if (!window.confirm(`确定还原 ${label} 为配置文件中的设置？这只会删除该通知方式的后台覆盖配置。`)) {
+      return;
+    }
+    const ok = await saveSettingsPayload(settingsPayloadFromState({ [key]: null }), {
+      successMessage: `${label} 已还原为配置文件设置`,
+      messageTarget: `#${scope}-save-message`,
+      render: "none",
+      busyButton: $(`#${scope}-reset`),
+    });
+    if (!ok) {
+      return;
+    }
+    try {
+      await reloadNotificationState();
+      resetLocalBaseline(scope, `${label} 已还原为配置文件设置`);
+    } catch (err) {
+      const message = `${label} 已还原，但重新加载失败: ${err.message}`;
+      text(localMessage(scope), message);
+      showToast(message, "warn");
     }
   }
 
@@ -2576,6 +3004,50 @@
       "#bark-save-message",
       "Bark 测试请求已发送，请检查手机通知",
     );
+  }
+
+  async function testWechatSettings() {
+    const wechat = collectWechatSettings();
+    const validationMessage = validateWechatSettingsForTest(wechat);
+    if (validationMessage) {
+      text("#wechat-save-message", validationMessage);
+      showToast(validationMessage, "warn");
+      return;
+    }
+    await testNotification("wechat", "wechat", { wechat }, "#wechat-test", "#wechat-save-message");
+  }
+
+  async function testEmailSettings() {
+    const email = collectEmailSettings();
+    const validationMessage = validateEmailSettingsForTest(email);
+    if (validationMessage) {
+      text("#email-save-message", validationMessage);
+      showToast(validationMessage, "warn");
+      return;
+    }
+    await testNotification("email", "email", { email }, "#email-test", "#email-save-message");
+  }
+
+  async function testWebhookSettings() {
+    const webhook = collectWebhookSettings();
+    const validationMessage = validateWebhookSettingsForTest(webhook);
+    if (validationMessage) {
+      text("#webhook-save-message", validationMessage);
+      showToast(validationMessage, "warn");
+      return;
+    }
+    await testNotification("webhook", "webhook", { webhook }, "#webhook-test", "#webhook-save-message");
+  }
+
+  async function testLogSettings() {
+    const log = collectLogSettings();
+    const validationMessage = validateLogSettingsForTest(log);
+    if (validationMessage) {
+      text("#log-save-message", validationMessage);
+      showToast(validationMessage, "warn");
+      return;
+    }
+    await testNotification("log", "log", { log }, "#log-test", "#log-save-message");
   }
 
   async function saveAccessSettings() {
@@ -2886,11 +3358,33 @@
   $("#login-form").addEventListener("submit", login);
   $("#tg-save").addEventListener("click", saveTgbotSettings);
   $("#tg-test").addEventListener("click", testTgbotSettings);
+  $("#tg-reset").addEventListener("click", () => resetNotificationOverride("tg", "tgbot", "Telegram"));
+  $("#tg-token-reveal").addEventListener("click", () => toggleSecretVisibility("#tg-token"));
   $("#tg-token-clear").addEventListener("click", () => toggleSecretClear("#tg-token"));
+  $("#tg-chat-reveal").addEventListener("click", () => toggleSecretVisibility("#tg-chat"));
   $("#tg-chat-clear").addEventListener("click", () => toggleSecretClear("#tg-chat"));
   $("#bark-save").addEventListener("click", saveBarkSettings);
   $("#bark-test").addEventListener("click", testBarkSettings);
+  $("#bark-reset").addEventListener("click", () => resetNotificationOverride("bark", "bark", "Bark"));
+  $("#bark-key-reveal").addEventListener("click", () => toggleSecretVisibility("#bark-key"));
   $("#bark-key-clear").addEventListener("click", () => toggleSecretClear("#bark-key"));
+  $("#wechat-save").addEventListener("click", saveWechatSettings);
+  $("#wechat-test").addEventListener("click", testWechatSettings);
+  $("#wechat-reset").addEventListener("click", () => resetNotificationOverride("wechat", "wechat", "企业微信"));
+  $("#wechat-corp-secret-reveal").addEventListener("click", () => toggleSecretVisibility("#wechat-corp-secret"));
+  $("#wechat-corp-secret-clear").addEventListener("click", () => toggleSecretClear("#wechat-corp-secret"));
+  $("#email-save").addEventListener("click", saveEmailSettings);
+  $("#email-test").addEventListener("click", testEmailSettings);
+  $("#email-reset").addEventListener("click", () => resetNotificationOverride("email", "email", "Email"));
+  $("#email-password-reveal").addEventListener("click", () => toggleSecretVisibility("#email-password"));
+  $("#email-password-clear").addEventListener("click", () => toggleSecretClear("#email-password"));
+  $("#webhook-save").addEventListener("click", saveWebhookSettings);
+  $("#webhook-test").addEventListener("click", testWebhookSettings);
+  $("#webhook-reset").addEventListener("click", () => resetNotificationOverride("webhook", "webhook", "Webhook"));
+  $("#webhook-add-receiver").addEventListener("click", addWebhookReceiver);
+  $("#log-save").addEventListener("click", saveLogSettings);
+  $("#log-test").addEventListener("click", testLogSettings);
+  $("#log-reset").addEventListener("click", () => resetNotificationOverride("log", "log", "本地日志"));
   $("#access-save").addEventListener("click", saveAccessSettings);
   $("#expire-save").addEventListener("click", saveExpireNotifySettings);
   $("#password-form").addEventListener("submit", changeAdminPassword);
@@ -2925,9 +3419,17 @@
   $("#dashboard").addEventListener("focusout", handleSecretBlur);
   setIconButtonIcon($("#front-page-link"), "返回前台", "home");
   setIconButtonIcon($("#user-menu-toggle"), "用户菜单", "user");
+  setIconButtonIcon($("#tg-token-reveal"), "显示 Bot Token", "eye");
   setIconButtonIcon($("#tg-token-clear"), "清空 Bot Token", "trash");
+  setIconButtonIcon($("#tg-chat-reveal"), "显示 Chat ID", "eye");
   setIconButtonIcon($("#tg-chat-clear"), "清空 Chat ID", "trash");
+  setIconButtonIcon($("#bark-key-reveal"), "显示 Device Key", "eye");
   setIconButtonIcon($("#bark-key-clear"), "清空 Device Key", "trash");
+  setIconButtonIcon($("#wechat-corp-secret-reveal"), "显示 Corp Secret", "eye");
+  setIconButtonIcon($("#wechat-corp-secret-clear"), "清空 Corp Secret", "trash");
+  setIconButtonIcon($("#email-password-reveal"), "显示 SMTP Password", "eye");
+  setIconButtonIcon($("#email-password-clear"), "清空 SMTP Password", "trash");
+  setIconButtonIcon($("#webhook-add-receiver"), "添加 Webhook 接收器", "plus");
   applyTheme(state.theme);
   updateSaveButton();
 

@@ -156,6 +156,7 @@
                 <div class="block-head-actions">
                   <output id="tg-save-message" class="block-message" role="status"></output>
                   <button id="tg-test" class="secondary" type="button">测试</button>
+                  <button id="tg-reset" class="secondary" type="button">还原配置文件</button>
                   <button id="tg-save" type="button" disabled>保存</button>
                 </div>
               </div>
@@ -167,6 +168,7 @@
                 Bot Token
                 <div class="secret-field">
                   <input id="tg-token" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                  <button id="tg-token-reveal" class="icon-button secret-reveal" type="button" aria-label="显示 Bot Token"></button>
                   <button id="tg-token-clear" class="icon-button secret-clear" type="button" aria-label="清空 Bot Token"></button>
                 </div>
               </label>
@@ -174,6 +176,7 @@
                 Chat ID
                 <div class="secret-field">
                   <input id="tg-chat" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                  <button id="tg-chat-reveal" class="icon-button secret-reveal" type="button" aria-label="显示 Chat ID"></button>
                   <button id="tg-chat-clear" class="icon-button secret-clear" type="button" aria-label="清空 Chat ID"></button>
                 </div>
               </label>
@@ -200,6 +203,7 @@
                 <div class="block-head-actions">
                   <output id="bark-save-message" class="block-message" role="status"></output>
                   <button id="bark-test" class="secondary" type="button">测试</button>
+                  <button id="bark-reset" class="secondary" type="button">还原配置文件</button>
                   <button id="bark-save" type="button" disabled>保存</button>
                 </div>
               </div>
@@ -215,6 +219,7 @@
                 Device Key
                 <div class="secret-field">
                   <input id="bark-key" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                  <button id="bark-key-reveal" class="icon-button secret-reveal" type="button" aria-label="显示 Device Key"></button>
                   <button id="bark-key-clear" class="icon-button secret-clear" type="button" aria-label="清空 Device Key"></button>
                 </div>
               </label>
@@ -237,6 +242,167 @@
               <div class="block-actions">
                 <span class="block-message">Bark 通道</span>
               </div>
+            </section>
+
+            <section class="settings-block local-save-block" data-local-scope="wechat">
+              <div class="settings-block-head">
+                <h2>企业微信 / WeChat</h2>
+                <div class="block-head-actions">
+                  <output id="wechat-save-message" class="block-message" role="status"></output>
+                  <button id="wechat-test" class="secondary" type="button">测试</button>
+                  <button id="wechat-reset" class="secondary" type="button">还原配置文件</button>
+                  <button id="wechat-save" type="button" disabled>保存</button>
+                </div>
+              </div>
+              <label class="switch-row">
+                <input id="wechat-enabled" type="checkbox">
+                启用
+              </label>
+              <div class="field-grid">
+                <label>
+                  Corp ID
+                  <input id="wechat-corp-id" autocomplete="off">
+                </label>
+                <label>
+                  Agent ID
+                  <input id="wechat-agent-id" autocomplete="off">
+                </label>
+              </div>
+              <label>
+                Corp Secret
+                <div class="secret-field">
+                  <input id="wechat-corp-secret" class="secret-input" type="password" autocomplete="off" placeholder="未配置，输入后保存">
+                  <button id="wechat-corp-secret-reveal" class="icon-button secret-reveal" type="button" aria-label="显示 Corp Secret"></button>
+                  <button id="wechat-corp-secret-clear" class="icon-button secret-clear" type="button" aria-label="清空 Corp Secret"></button>
+                </div>
+              </label>
+              <label>
+                标题
+                <input id="wechat-title">
+              </label>
+              <div class="field-grid">
+                <label>
+                  上线模板
+                  <textarea id="wechat-online" rows="4"></textarea>
+                </label>
+                <label>
+                  离线模板
+                  <textarea id="wechat-offline" rows="4"></textarea>
+                </label>
+                <label>
+                  到期模板
+                  <textarea id="wechat-expire" rows="4"></textarea>
+                </label>
+                <label>
+                  健康模板
+                  <textarea id="wechat-health" rows="4"></textarea>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-block local-save-block" data-local-scope="email">
+              <div class="settings-block-head">
+                <h2>Email SMTP</h2>
+                <div class="block-head-actions">
+                  <output id="email-save-message" class="block-message" role="status"></output>
+                  <button id="email-test" class="secondary" type="button">测试</button>
+                  <button id="email-reset" class="secondary" type="button">还原配置文件</button>
+                  <button id="email-save" type="button" disabled>保存</button>
+                </div>
+              </div>
+              <label class="switch-row">
+                <input id="email-enabled" type="checkbox">
+                启用
+              </label>
+              <div class="field-grid">
+                <label>
+                  SMTP Server
+                  <input id="email-server" placeholder="smtp.example.com:587" autocomplete="off">
+                </label>
+                <label>
+                  发件人
+                  <input id="email-username" type="email" autocomplete="email">
+                </label>
+                <label>
+                  收件人
+                  <input id="email-to" type="text" placeholder="ops@example.com, alerts@example.com">
+                </label>
+                <label>
+                  Subject
+                  <input id="email-subject">
+                </label>
+              </div>
+              <label>
+                SMTP Password
+                <div class="secret-field">
+                  <input id="email-password" class="secret-input" type="password" autocomplete="new-password" placeholder="未配置，输入后保存">
+                  <button id="email-password-reveal" class="icon-button secret-reveal" type="button" aria-label="显示 SMTP Password"></button>
+                  <button id="email-password-clear" class="icon-button secret-clear" type="button" aria-label="清空 SMTP Password"></button>
+                </div>
+              </label>
+              <label>
+                标题
+                <input id="email-title">
+              </label>
+              <div class="field-grid">
+                <label>
+                  上线模板
+                  <textarea id="email-online" rows="4"></textarea>
+                </label>
+                <label>
+                  离线模板
+                  <textarea id="email-offline" rows="4"></textarea>
+                </label>
+                <label>
+                  到期模板
+                  <textarea id="email-expire" rows="4"></textarea>
+                </label>
+                <label>
+                  健康模板
+                  <textarea id="email-health" rows="4"></textarea>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-block local-save-block" data-local-scope="webhook">
+              <div class="settings-block-head">
+                <h2>Webhook</h2>
+                <div class="block-head-actions">
+                  <output id="webhook-save-message" class="block-message" role="status"></output>
+                  <button id="webhook-test" class="secondary" type="button">测试</button>
+                  <button id="webhook-reset" class="secondary" type="button">还原配置文件</button>
+                  <button id="webhook-save" type="button" disabled>保存</button>
+                </div>
+              </div>
+              <label class="switch-row">
+                <input id="webhook-enabled" type="checkbox">
+                启用结构化 Webhook
+              </label>
+              <div class="webhook-list-head">
+                <output id="webhook-source" class="field-hint" role="status"></output>
+                <button id="webhook-add-receiver" class="icon-button" type="button" aria-label="添加 Webhook 接收器"></button>
+              </div>
+              <div id="webhook-receivers" class="webhook-receiver-list"></div>
+            </section>
+
+            <section class="settings-block local-save-block" data-local-scope="log">
+              <div class="settings-block-head">
+                <h2>本地日志</h2>
+                <div class="block-head-actions">
+                  <output id="log-save-message" class="block-message" role="status"></output>
+                  <button id="log-test" class="secondary" type="button">测试</button>
+                  <button id="log-reset" class="secondary" type="button">还原配置文件</button>
+                  <button id="log-save" type="button" disabled>保存</button>
+                </div>
+              </div>
+              <label class="switch-row">
+                <input id="log-enabled" type="checkbox">
+                启用
+              </label>
+              <label>
+                日志模板
+                <textarea id="log-template" rows="6"></textarea>
+              </label>
             </section>
           </div>
         </section>

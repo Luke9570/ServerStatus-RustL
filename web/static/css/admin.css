@@ -901,7 +901,7 @@ label.is-disabled {
 
 .secret-field {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) 32px 32px;
   gap: 6px;
   align-items: center;
 }
@@ -914,6 +914,88 @@ label.is-disabled {
   border-color: color-mix(in srgb, var(--bad) 55%, var(--line));
   background: var(--bad-soft);
   color: var(--bad);
+}
+
+.webhook-list-head,
+.webhook-receiver-head,
+.webhook-headers-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.webhook-list-head {
+  min-height: 32px;
+  padding-top: 2px;
+  border-top: 1px solid var(--line);
+}
+
+.webhook-list-head .field-hint {
+  min-width: 0;
+}
+
+.webhook-receiver-list {
+  display: grid;
+  gap: 12px;
+}
+
+.webhook-receiver {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.webhook-receiver-head {
+  min-height: 32px;
+}
+
+.webhook-receiver-head .switch-row {
+  margin-left: auto;
+}
+
+.webhook-receiver-identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.webhook-receiver-identity .muted {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webhook-field-grid {
+  align-items: start;
+}
+
+.webhook-headers {
+  display: grid;
+  gap: 6px;
+}
+
+.webhook-headers-head {
+  min-height: 28px;
+}
+
+.webhook-header-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.3fr) 32px;
+  gap: 6px;
+  align-items: center;
+}
+
+.webhook-header-row .icon-button,
+.webhook-headers-head .icon-button,
+.webhook-list-head .icon-button,
+.webhook-receiver-head .icon-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
 }
 
 .editor-dialog {
@@ -1217,6 +1299,29 @@ label.is-disabled {
   .editor-grid,
   .check-grid {
     grid-template-columns: 1fr;
+  }
+
+  .webhook-receiver-head {
+    align-items: start;
+    flex-wrap: wrap;
+  }
+
+  .webhook-receiver-head .switch-row {
+    margin-left: 0;
+  }
+
+  .webhook-header-row {
+    grid-template-columns: minmax(0, 1fr) 32px;
+  }
+
+  .webhook-header-row > :nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .webhook-header-row > :nth-child(3) {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .money-field {
