@@ -120,6 +120,35 @@ pub async fn shutdown_signal() {
     println!("signal received, starting graceful shutdown");
 }
 
+fn build_notifiers(cfg: &'static config::Config) -> Vec<Box<dyn notifier::Notifier + Send>> {
+    vec![
+        Box::new(notifier::ReadinessGate::new(
+            notifier::tgbot::TGBot::new(&cfg.tgbot),
+            || admin::effective_tgbot_config(&cfg.tgbot).is_ready(),
+        )),
+        Box::new(notifier::ReadinessGate::new(
+            notifier::bark::Bark::new(&cfg.bark),
+            || admin::effective_bark_config(&cfg.bark).is_ready(),
+        )),
+        Box::new(notifier::ReadinessGate::new(
+            notifier::wechat::WeChat::new(&cfg.wechat),
+            || admin::effective_wechat_config(&cfg.wechat).is_ready(),
+        )),
+        Box::new(notifier::ReadinessGate::new(
+            notifier::email::Email::new(&cfg.email),
+            || admin::effective_email_config(&cfg.email).is_ready(),
+        )),
+        Box::new(notifier::ReadinessGate::new(
+            notifier::webhook::Webhook::new(&cfg.webhook),
+            || admin::effective_webhook_override(&cfg.webhook).is_ready(),
+        )),
+        Box::new(notifier::ReadinessGate::new(
+            notifier::log::Log::new(&cfg.log),
+            || admin::effective_log_config(&cfg.log).is_ready(),
+        )),
+    ]
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     pretty_env_logger::init();
@@ -153,44 +182,19 @@ async fn main() -> Result<(), anyhow::Error> {
     // init notifier
     *notifier::NOTIFIER_HANDLE.lock().unwrap() = Some(Handle::current());
     let cfg = G_CONFIG.get().unwrap();
-    let notifies: Arc<Mutex<Vec<Box<dyn notifier::Notifier + Send>>>> = Arc::new(Mutex::new(Vec::new()));
-    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
-        notifier::tgbot::TGBot::new(&cfg.tgbot),
-        || admin::effective_tgbot_config(&cfg.tgbot).is_ready(),
-    )));
-    notifies.lock().unwrap().push(o);
-    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
-        notifier::bark::Bark::new(&cfg.bark),
-        || admin::effective_bark_config(&cfg.bark).is_ready(),
-    )));
-    notifies.lock().unwrap().push(o);
-    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
-        notifier::wechat::WeChat::new(&cfg.wechat),
-        || admin::effective_wechat_config(&cfg.wechat).is_ready(),
-    )));
-    notifies.lock().unwrap().push(o);
-    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
-        notifier::email::Email::new(&cfg.email),
-        || admin::effective_email_config(&cfg.email).is_ready(),
-    )));
-    notifies.lock().unwrap().push(o);
-    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
-        notifier::webhook::Webhook::new(&cfg.webhook),
-        || admin::effective_webhook_override(&cfg.webhook).is_ready(),
-    )));
-    notifies.lock().unwrap().push(o);
-    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
-        notifier::log::Log::new(&cfg.log),
-        || admin::effective_log_config(&cfg.log).is_ready(),
-    )));
-    notifies.lock().unwrap().push(o);
+    let notifies = Arc::new(Mutex::new(build_notifiers(cfg)));
     // init notifier end
 
     // notify test
     if args.notify_test {
         for notifier in &*notifies.lock().unwrap() {
             eprintln!("send test message to {}", notifier.kind());
-            notifier.notify_test().unwrap();
+            if notifier.notify_test().is_err() {
+                error!(
+                    "notification test failed: kind={}, error=notification failed",
+                    notifier.kind()
+                );
+            }
         }
         thread::sleep(Duration::from_millis(7000)); // TODO: wait
         eprintln!("Please check for notifications");
@@ -218,4 +222,31 @@ async fn main() -> Result<(), anyhow::Error> {
         .unwrap();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registers_all_six_with_disabled_malformed_legacy_configs() {
+        let mut config: config::Config = toml::from_str("").unwrap();
+        config.wechat.enabled = false;
+        config.wechat.online_tpl = "{{ invalid".into();
+        config.webhook.enabled = false;
+        config.webhook.receiver = vec![notifier::webhook::Receiver {
+            enabled: true,
+            script: "let = invalid".into(),
+            ..Default::default()
+        }];
+        let config = Box::leak(Box::new(config));
+
+        let notifiers = build_notifiers(config);
+        let kinds = notifiers
+            .iter()
+            .map(|notifier| notifier.kind())
+            .collect::<Vec<_>>();
+
+        assert_eq!(kinds, ["tgbot", "bark", "wechat", "email", "webhook", "log"]);
+    }
 }

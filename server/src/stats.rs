@@ -70,6 +70,30 @@ impl NotifyMessage {
     }
 }
 
+fn dispatch_notifiers<'a, I>(notifiers: I, event: &Event, stat: &HostStat)
+where
+    I: IntoIterator<Item = &'a (dyn Notifier + Send)>,
+{
+    for notifier in notifiers {
+        trace!("{} notify {:?} => {:?}", notifier.kind(), event, stat);
+        if let Err(error) = notifier.notify(event, stat) {
+            error!(
+                "{}",
+                notification_failure_context(notifier.kind(), event, &stat.name, &error)
+            );
+        }
+    }
+}
+
+fn notification_failure_context(
+    kind: &str,
+    event: &Event,
+    server: &str,
+    _error: &anyhow::Error,
+) -> String {
+    format!("notification failed: kind={kind}, event={event:?}, server={server}, error=notification failed")
+}
+
 pub struct StatsMgr {
     resp_json: Arc<Mutex<String>>,
     stats_data: Arc<Mutex<StatsResp>>,
@@ -537,18 +561,20 @@ impl StatsMgr {
             while let Ok(msg) = notifier_rx.recv() {
                 let notify_list = &*notifies.lock().unwrap();
                 trace!("recv notify => {:?}, {:?}", msg.event, msg.stat);
-                for n in notify_list {
-                    if !crate::admin::notification_methods_allow(&msg.notification_methods, n.kind()) {
-                        continue;
-                    }
-                    if msg.notification_methods.is_empty()
-                        && !crate::admin::notification_group_allows(&msg.notification_group, n.kind())
-                    {
-                        continue;
-                    }
-                    trace!("{} notify {:?} => {:?}", n.kind(), msg.event, msg.stat);
-                    n.notify(&msg.event, &msg.stat);
-                }
+                let selected = notify_list
+                    .iter()
+                    .filter(|notifier| {
+                        crate::admin::notification_methods_allow(
+                            &msg.notification_methods,
+                            notifier.kind(),
+                        ) && (!msg.notification_methods.is_empty()
+                            || crate::admin::notification_group_allows(
+                                &msg.notification_group,
+                                notifier.kind(),
+                            ))
+                    })
+                    .map(std::convert::AsRef::as_ref);
+                dispatch_notifiers(selected, &msg.event, &msg.stat);
             }
         });
 
@@ -1206,6 +1232,72 @@ mod tests {
     use crate::config::HostGroup;
     use crate::runtime_state::{AlertState, KnownHost, RuntimeStateStore};
     use stat_common::server_status::{IpInfo, SysInfo};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FailingNotifier;
+
+    impl Notifier for FailingNotifier {
+        fn kind(&self) -> &'static str {
+            "failing"
+        }
+
+        fn notify(&self, _event: &Event, _stat: &HostStat) -> Result<()> {
+            anyhow::bail!("sentinel-notifier-secret")
+        }
+
+        fn send_notify(&self, _content: String) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct SuccessfulNotifier(Arc<AtomicUsize>);
+
+    impl Notifier for SuccessfulNotifier {
+        fn kind(&self) -> &'static str {
+            "success"
+        }
+
+        fn notify(&self, _event: &Event, _stat: &HostStat) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn send_notify(&self, _content: String) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn notifier_dispatch_continues_after_redacted_failure() {
+        let successes = Arc::new(AtomicUsize::new(0));
+        let notifiers: Vec<Box<dyn Notifier + Send>> = vec![
+            Box::new(FailingNotifier),
+            Box::new(SuccessfulNotifier(Arc::clone(&successes))),
+        ];
+        let stat = HostStat {
+            name: "server-one".into(),
+            ..Default::default()
+        };
+
+        dispatch_notifiers(
+            notifiers.iter().map(std::convert::AsRef::as_ref),
+            &Event::NodeDown,
+            &stat,
+        );
+
+        assert_eq!(successes.load(Ordering::SeqCst), 1);
+        let context = notification_failure_context(
+            "failing",
+            &Event::NodeDown,
+            "server-one",
+            &anyhow::anyhow!("sentinel-notifier-secret"),
+        );
+        assert_eq!(
+            context,
+            "notification failed: kind=failing, event=NodeDown, server=server-one, error=notification failed"
+        );
+        assert!(!context.contains("sentinel-notifier-secret"));
+    }
 
     #[test]
     fn infers_common_country_names() {

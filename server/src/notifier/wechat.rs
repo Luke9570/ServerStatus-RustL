@@ -1,5 +1,5 @@
 #![deny(warnings)]
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use log::{error, info};
 use minijinja::context;
 use reqwest;
@@ -8,8 +8,7 @@ use serde_json;
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::jinja::{add_template, render_template};
-use crate::notifier::{get_tag, Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{Event, HostStat, NOTIFIER_HANDLE};
 
 // https://qydev.weixin.qq.com/wiki/index.php?title=%E4%B8%BB%E5%8A%A8%E8%B0%83%E7%94%A8
 // https://qydev.weixin.qq.com/wiki/index.php?title=%E5%8F%91%E9%80%81%E6%8E%A5%E5%8F%A3%E8%AF%B4%E6%98%8E
@@ -47,34 +46,32 @@ pub struct WeChat {
 
 impl WeChat {
     pub fn new(cfg: &'static Config) -> Self {
-        let o = Self {
+        Self {
             config: cfg,
             http_client: reqwest::Client::new(),
-        };
-        add_template(KIND, get_tag(&Event::NodeUp), o.config.online_tpl.clone());
-        add_template(KIND, get_tag(&Event::NodeDown), o.config.offline_tpl.clone());
-        add_template(KIND, get_tag(&Event::Custom), o.config.custom_tpl.clone());
-        add_template(KIND, get_tag(&Event::Expire), o.config.expire_tpl.clone());
-        add_template(KIND, get_tag(&Event::Health), o.config.health_tpl.clone());
-
-        o
-    }
-}
-
-impl crate::notifier::Notifier for WeChat {
-    fn kind(&self) -> &'static str {
-        KIND
+        }
     }
 
-    fn send_notify(&self, text_content: String) -> Result<()> {
-        // get access_token
+    fn send_with_config(&self, config: &Config, text_content: String) -> Result<()> {
+        if !config.enabled {
+            return Ok(());
+        }
+        if !config.is_ready() {
+            return Err(anyhow!("WeChat notifier is not ready"));
+        }
+
         let mut data = HashMap::new();
-        data.insert("corpid", self.config.corp_id.clone());
-        data.insert("corpsecret", self.config.corp_secret.clone());
+        data.insert("corpid", config.corp_id.clone());
+        data.insert("corpsecret", config.corp_secret.clone());
 
         let http_client = self.http_client.clone();
-        let handle = NOTIFIER_HANDLE.lock().unwrap().as_ref().unwrap().clone();
-        let agent_id = self.config.agent_id.clone();
+        let handle = NOTIFIER_HANDLE
+            .lock()
+            .map_err(|_| anyhow!("notification runtime lock is unavailable"))?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!("notification runtime is unavailable"))?;
+        let agent_id = config.agent_id.clone();
         handle.spawn(async move {
             match http_client
                 .post(TOKEN_URL)
@@ -84,72 +81,123 @@ impl crate::notifier::Notifier for WeChat {
                 .await
             {
                 Ok(resp) => {
-                    info!("wechat get access token resp => {resp:?}");
                     let json_res = resp.json::<HashMap<String, serde_json::Value>>().await;
                     if let Ok(json_data) = json_res {
-                        if let Some(access_token) = json_data.get("access_token") {
-                            if let Some(token) = access_token.as_str() {
-                                let req_url =
-                                    format!("https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}");
-                                let req_data = serde_json::json!({
-                                    "touser": "@all",
-                                    "agentid": agent_id,
-                                    "msgtype": "text",
-                                    "text": {
-                                        "content": text_content,
-                                    },
-                                    "safe": 0
-                                });
+                        if let Some(token) = json_data
+                            .get("access_token")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            let req_url =
+                                format!("https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}");
+                            let req_data = serde_json::json!({
+                                "touser": "@all",
+                                "agentid": agent_id,
+                                "msgtype": "text",
+                                "text": {
+                                    "content": text_content,
+                                },
+                                "safe": 0
+                            });
 
-                                match http_client
-                                    .post(&req_url)
-                                    .timeout(Duration::from_secs(5))
-                                    .json(&req_data)
-                                    .send()
-                                    .await
-                                {
-                                    Ok(resp) => {
-                                        info!("wechat send msg resp => {resp:?}");
-                                    }
-                                    Err(err) => {
-                                        error!("wechat send msg error => {err:?}");
-                                    }
+                            match http_client
+                                .post(&req_url)
+                                .timeout(Duration::from_secs(5))
+                                .json(&req_data)
+                                .send()
+                                .await
+                            {
+                                Ok(resp) => {
+                                    info!("wechat send message status => {}", resp.status());
                                 }
+                                Err(_) => error!("wechat send message failed"),
                             }
                         }
                     }
                 }
-                Err(err) => {
-                    error!("wechat get access_token error => {err:?}");
-                }
+                Err(_) => error!("wechat access token request failed"),
             }
         });
 
         Ok(())
     }
+}
+
+impl crate::notifier::Notifier for WeChat {
+    fn kind(&self) -> &'static str {
+        KIND
+    }
+
+    fn send_notify(&self, text_content: String) -> Result<()> {
+        let config = crate::admin::effective_wechat_config(self.config);
+        self.send_with_config(&config, text_content)
+    }
 
     fn notify(&self, e: &Event, stat: &HostStat) -> Result<()> {
-        render_template(
-            self.kind(),
-            get_tag(e),
-            context!(host => stat, config => self.config, ip_info => stat.ip_info, sys_info => stat.sys_info),
-            true,
-        )
-        .map(|content| match *e {
-            Event::NodeUp | Event::NodeDown | Event::Expire | Event::Health => {
-                if !content.is_empty() {
-                    self.send_notify(content).unwrap();
-                }
-            }
-            Event::Custom => {
-                info!("render.custom.tpl => {content}");
-                if !content.is_empty() {
-                    self.send_notify(format!("{}\n{}", self.config.title, content))
-                        .unwrap_or_else(|err| {
-                            error!("send_msg err => {err:?}");
-                        });
-                }
-            }
-        })
+        let config = crate::admin::effective_wechat_config(self.config);
+        if !config.enabled {
+            return Ok(());
+        }
+        if !config.is_ready() {
+            return Err(anyhow!("WeChat notifier is not ready"));
+        }
+
+        let content = render_content(&config, e, stat)?;
+        if content.is_empty() {
+            return Ok(());
+        }
+        let content = if matches!(e, Event::Custom) {
+            format!("{}\n{content}", config.title)
+        } else {
+            content
+        };
+        self.send_with_config(&config, content)
+    }
+
+    fn notify_test(&self) -> Result<()> {
+        let config = crate::admin::effective_wechat_config(self.config);
+        self.send_with_config(&config, "❗ServerStatus test msg".to_string())
+    }
+}
+
+fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<String> {
+    let source = match event {
+        Event::NodeUp => &config.online_tpl,
+        Event::NodeDown => &config.offline_tpl,
+        Event::Custom => &config.custom_tpl,
+        Event::Expire => &config.expire_tpl,
+        Event::Health => &config.health_tpl,
+    };
+    let mut environment = minijinja::Environment::new();
+    environment
+        .add_template("wechat", source)
+        .map_err(|_| anyhow!("invalid WeChat template"))?;
+    let rendered = environment
+        .get_template("wechat")
+        .map_err(|_| anyhow!("invalid WeChat template"))?
+        .render(context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info))
+        .map_err(|_| anyhow!("failed to render WeChat template"))?;
+    Ok(rendered
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_invalid_template_does_not_panic_during_construction() {
+        let config = Box::leak(Box::new(Config {
+            enabled: false,
+            online_tpl: "{{ invalid".into(),
+            ..Default::default()
+        }));
+
+        let notifier = WeChat::new(config);
+
+        assert_eq!(crate::notifier::Notifier::kind(&notifier), "wechat");
     }
 }

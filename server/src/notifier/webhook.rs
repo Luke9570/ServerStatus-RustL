@@ -70,23 +70,28 @@ impl Webhook {
         o.engine.register_fn("join", join);
         o.engine.register_fn("now_str", now_str);
 
-        for r in &o.config.receiver {
-            if r.enabled {
-                let ast = o.engine.compile(&r.script).unwrap();
-                o.ast_list.push(Some(ast));
+        for receiver in &o.config.receiver {
+            let ast = if receiver.enabled {
+                o.engine.compile(&receiver.script).ok()
             } else {
-                o.ast_list.push(None);
-            }
+                None
+            };
+            o.ast_list.push(ast);
         }
 
         o
     }
-    fn call_webhook(&self, r: &'static Receiver, content: String) {
+    fn call_webhook(&self, r: &'static Receiver, content: String) -> Result<()> {
         if content.is_empty() {
-            return;
+            return Ok(());
         }
 
-        let handle = NOTIFIER_HANDLE.lock().unwrap().as_ref().unwrap().clone();
+        let handle = NOTIFIER_HANDLE
+            .lock()
+            .map_err(|_| anyhow::anyhow!("notification runtime lock is unavailable"))?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("notification runtime is unavailable"))?;
         let http_client = self.http_client.clone();
         handle.spawn(async move {
             let mut http_client_builder = http_client
@@ -106,14 +111,11 @@ impl Webhook {
 
             //
             match http_client_builder.send().await {
-                Ok(resp) => {
-                    info!("webhook send msg resp => {resp:?}");
-                }
-                Err(err) => {
-                    error!("webhook send msg error => {err:?}");
-                }
+                Ok(resp) => info!("webhook send message status => {}", resp.status()),
+                Err(_) => error!("webhook send message failed"),
             }
         });
+        Ok(())
     }
 }
 impl crate::notifier::Notifier for Webhook {
@@ -121,17 +123,22 @@ impl crate::notifier::Notifier for Webhook {
         KIND
     }
 
-    fn send_notify(&self, content: String) -> Result<()> {
-        info!("{content}");
+    fn send_notify(&self, _content: String) -> Result<()> {
         Ok(())
     }
 
     fn notify_test(&self) -> Result<()> {
-        for r in &self.config.receiver {
-            if !r.enabled {
+        for (idx, receiver) in self.config.receiver.iter().enumerate() {
+            if !receiver.enabled
+                || self
+                    .ast_list
+                    .get(idx)
+                    .and_then(Option::as_ref)
+                    .is_none()
+            {
                 continue;
             }
-            self.call_webhook(r, "❗ServerStatus test msg".into());
+            self.call_webhook(receiver, "❗ServerStatus test msg".into())?;
         }
         Ok(())
     }
@@ -149,18 +156,40 @@ impl crate::notifier::Notifier for Webhook {
             scope.push("ip_info", to_dynamic(stat.ip_info.as_ref())?);
             scope.push("sys_info", to_dynamic(stat.sys_info.as_ref())?);
 
-            let res: Dynamic = self
-                .engine
-                .eval_ast_with_scope(&mut scope, self.ast_list[idx].as_ref().unwrap())?;
+            let Some(ast) = self.ast_list.get(idx).and_then(Option::as_ref) else {
+                continue;
+            };
+            let res: Dynamic = self.engine.eval_ast_with_scope(&mut scope, ast)?;
 
             // [notify, json_body/content]
             if let Ok(v) = from_dynamic::<Array>(&res) {
                 if v.len() >= 2 && from_dynamic::<bool>(&v[0]).unwrap_or_default() {
-                    self.call_webhook(r, serde_json::to_string(&v[1]).unwrap_or_default());
+                    self.call_webhook(r, serde_json::to_string(&v[1]).unwrap_or_default())?;
                 }
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_invalid_legacy_receiver_does_not_panic_during_construction() {
+        let config = Box::leak(Box::new(Config {
+            enabled: false,
+            receiver: vec![Receiver {
+                enabled: true,
+                script: "let = invalid".into(),
+                ..Default::default()
+            }],
+        }));
+
+        let notifier = Webhook::new(config);
+
+        assert_eq!(crate::notifier::Notifier::kind(&notifier), "webhook");
     }
 }
