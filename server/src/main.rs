@@ -140,13 +140,20 @@ fn build_notifiers(cfg: &'static config::Config) -> Vec<Box<dyn notifier::Notifi
         )),
         Box::new(notifier::ReadinessGate::new(
             notifier::webhook::Webhook::new(&cfg.webhook),
-            || admin::effective_webhook_override(&cfg.webhook).is_ready(),
+            || legacy_webhook_ready(&admin::effective_webhook_override(&cfg.webhook)),
         )),
         Box::new(notifier::ReadinessGate::new(
             notifier::log::Log::new(&cfg.log),
             || admin::effective_log_config(&cfg.log).is_ready(),
         )),
     ]
+}
+
+fn legacy_webhook_ready(config: &admin::EffectiveWebhookConfig) -> bool {
+    match config {
+        admin::EffectiveWebhookConfig::Legacy(config) => config.is_ready(),
+        admin::EffectiveWebhookConfig::Structured(_) => false,
+    }
 }
 
 #[tokio::main]
@@ -248,5 +255,34 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(kinds, ["tgbot", "bark", "wechat", "email", "webhook", "log"]);
+    }
+
+    #[test]
+    fn legacy_webhook_gate_rejects_structured_mode_and_accepts_ready_legacy_mode() {
+        let legacy = admin::EffectiveWebhookConfig::Legacy(notifier::webhook::Config {
+            enabled: true,
+            receiver: vec![notifier::webhook::Receiver {
+                enabled: true,
+                url: "https://legacy.example/hook".into(),
+                timeout: 5,
+                script: "[false, \"\"]".into(),
+                ..Default::default()
+            }],
+        });
+        let structured = admin::EffectiveWebhookConfig::Structured(
+            admin::StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![admin::StructuredWebhookReceiver {
+                    enabled: true,
+                    url: "https://structured.example/hook".into(),
+                    timeout: 5,
+                    body_tpl: "{{ host.name }}".into(),
+                    ..Default::default()
+                }],
+            },
+        );
+
+        assert!(legacy_webhook_ready(&legacy));
+        assert!(!legacy_webhook_ready(&structured));
     }
 }

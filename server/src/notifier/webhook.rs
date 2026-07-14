@@ -192,4 +192,38 @@ mod tests {
 
         assert_eq!(crate::notifier::Notifier::kind(&notifier), "webhook");
     }
+
+    #[test]
+    fn invalid_legacy_receiver_does_not_disable_valid_sibling() {
+        let config = Box::leak(Box::new(Config {
+            enabled: true,
+            receiver: vec![
+                Receiver {
+                    enabled: true,
+                    url: "https://invalid.example/hook".into(),
+                    timeout: 5,
+                    script: "let = sentinel-compile-secret".into(),
+                    ..Default::default()
+                },
+                Receiver {
+                    enabled: true,
+                    url: "https://valid.example/hook".into(),
+                    timeout: 5,
+                    script: "[false, \"safe\"]".into(),
+                    ..Default::default()
+                },
+            ],
+        }));
+
+        let notifier = Webhook::new(config);
+
+        assert!(notifier.ast_list[0].is_none());
+        assert!(notifier.ast_list[1].is_some());
+        assert!(crate::notifier::Notifier::notify(
+            &notifier,
+            &Event::NodeDown,
+            &HostStat::default(),
+        )
+        .is_ok());
+    }
 }
