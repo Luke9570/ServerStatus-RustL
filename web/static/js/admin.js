@@ -1285,6 +1285,21 @@
     $("#alert-rule-rows").replaceChildren(...rows);
   }
 
+  function refreshAlertRuleNotificationMethods() {
+    renderAlertRules();
+    if (state.editor?.type !== "alert-rule") {
+      return;
+    }
+    const currentPicker = $("#editor-body [data-rule-notifications]");
+    if (!currentPicker) {
+      return;
+    }
+    const selected = checkedValues(".js-rule-notifications");
+    const visibleMethodCount = currentPicker.querySelectorAll(".js-rule-notifications input").length;
+    const notifications = selected.length === visibleMethodCount ? notificationMethods().map((method) => method.id) : selected;
+    currentPicker.replaceWith(notificationMethodPicker({ notifications }));
+  }
+
   function alertRuleTargetCell(rule) {
     const cell = document.createElement("td");
     const targets = [];
@@ -1308,6 +1323,18 @@
     renderEmailNotification();
     renderWebhookNotification();
     renderLogNotification();
+  }
+
+  function renderNotification(scope) {
+    const renderers = {
+      tg: renderTgbotNotification,
+      bark: renderBarkNotification,
+      wechat: renderWechatNotification,
+      email: renderEmailNotification,
+      webhook: renderWebhookNotification,
+      log: renderLogNotification,
+    };
+    renderers[scope]?.();
   }
 
   function renderTgbotNotification() {
@@ -1991,9 +2018,10 @@
     const methods = notificationMethods();
     if (!methods.length) {
       const notice = el("div", "editor-notice wide", "请先配置并启用通知方式");
+      notice.dataset.ruleNotifications = "1";
       return notice;
     }
-    return multiCheck(
+    const picker = multiCheck(
       "通知方式（只显示已启用，留空表示全部）",
       "js-rule-notifications",
       methods,
@@ -2001,6 +2029,8 @@
       (item) => item.id,
       (item) => item.name,
     );
+    picker.dataset.ruleNotifications = "1";
+    return picker;
   }
 
   function openDialog(title, subtitle) {
@@ -2885,7 +2915,8 @@
     await saveNotificationModule("log", "log", collectLogSettings(), "本地日志");
   }
 
-  async function reloadNotificationState() {
+  async function reloadNotificationState(scope) {
+    const configuredMethods = state.config?.configured_notification_methods || [];
     const [config, settings] = await Promise.all([
       getJson("/api/admin/config.json"),
       getJson("/api/admin/settings"),
@@ -2893,8 +2924,13 @@
     state.config = config;
     state.settings = settings.data || {};
     ensureSettings();
-    renderNotifications();
-    renderAlertRules();
+    renderNotification(scope);
+    const refreshedMethods = state.config?.configured_notification_methods || [];
+    const methodsChanged =
+      configuredMethods.length !== refreshedMethods.length || configuredMethods.some((method) => !refreshedMethods.includes(method));
+    if (methodsChanged) {
+      refreshAlertRuleNotificationMethods();
+    }
   }
 
   async function saveNotificationModule(scope, key, value, label) {
@@ -2908,7 +2944,7 @@
       return;
     }
     try {
-      await reloadNotificationState();
+      await reloadNotificationState(scope);
       resetLocalBaseline(scope, `${label} 已同步到后端`);
     } catch (err) {
       const message = `${label} 已保存，但重新加载失败: ${err.message}`;
@@ -2931,7 +2967,7 @@
       return;
     }
     try {
-      await reloadNotificationState();
+      await reloadNotificationState(scope);
       resetLocalBaseline(scope, `${label} 已还原为配置文件设置`);
     } catch (err) {
       const message = `${label} 已还原，但重新加载失败: ${err.message}`;
