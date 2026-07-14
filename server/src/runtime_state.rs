@@ -179,9 +179,7 @@ impl RuntimeStateStore {
         let before_alerts = state.state.alerts.len();
         state.state.hosts.retain(|name, _| !hosts.contains(name));
         state.state.alerts.retain(|key, _| {
-            !hosts
-                .iter()
-                .any(|host| key.strip_prefix(host).is_some_and(|suffix| suffix.starts_with(':')))
+            key.rsplit_once(':').is_none_or(|(host, _rule)| !hosts.contains(host))
         });
         let changed = state.state.hosts.len() != before_hosts || state.state.alerts.len() != before_alerts;
         if changed {
@@ -359,6 +357,20 @@ mod tests {
         }
     }
 
+    fn runtime_temp_paths(path: &Path) -> Vec<PathBuf> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let target_name = path.file_name().unwrap().to_string_lossy();
+        fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let file_name = entry.file_name().to_string_lossy().into_owned();
+                let uuid = file_name.strip_prefix(&format!("{target_name}."))?.strip_suffix(".tmp")?;
+                uuid::Uuid::parse_str(uuid).ok().map(|_| entry.path())
+            })
+            .collect()
+    }
+
     #[test]
     fn runtime_state_round_trip_restores_host_offline_without_secrets() {
         let dir = temporary_path("runtime");
@@ -378,7 +390,7 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("password"));
         assert!(!text.contains("token"));
-        assert!(!path.with_extension("json.tmp").exists());
+        assert!(runtime_temp_paths(&path).is_empty());
 
         let restored = RuntimeStateStore::load(path.clone()).snapshot();
         let stat = restored.hosts["srv-1"].clone().into_offline_stat();
@@ -447,7 +459,9 @@ mod tests {
 
     #[test]
     fn purge_prevents_stale_runtime_save_from_overwriting_disk() {
-        let path = temporary_path("runtime-save-race.json");
+        let directory = temporary_path("runtime-save-race");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("runtime-state.json");
         let store = std::sync::Arc::new(RuntimeStateStore::load(path.clone()));
         store.upsert_host(KnownHost {
             name: "pve".into(),
@@ -484,8 +498,10 @@ mod tests {
         let restored = RuntimeStateStore::load(path.clone()).snapshot();
         assert!(restored.hosts.is_empty());
         assert!(restored.alerts.is_empty());
+        assert!(runtime_temp_paths(&path).is_empty());
 
         remove_file_if_present(&path);
+        fs::remove_dir(&directory).unwrap();
     }
 
     #[test]
@@ -515,20 +531,30 @@ mod tests {
     fn colon_host_ids_prune_and_purge_only_the_exact_host_alerts() {
         let path = temporary_path("runtime-colon-host-alerts.json");
         let store = RuntimeStateStore::load(path.clone());
+        store.upsert_host(KnownHost {
+            name: "edge".into(),
+            ..Default::default()
+        });
+        store.upsert_host(KnownHost {
+            name: "edge:1".into(),
+            ..Default::default()
+        });
         store.replace_alerts(HashMap::from([
+            ("edge:offline".into(), AlertState::default()),
             ("edge:1:offline".into(), AlertState::default()),
-            ("edge:10:offline".into(), AlertState::default()),
         ]));
 
         assert!(!store.prune_alert_states(
             &HashSet::from(["offline".into()]),
-            &HashSet::from(["edge:1".into(), "edge:10".into()]),
+            &HashSet::from(["edge".into(), "edge:1".into()]),
         ));
 
-        store.purge_hosts(&HashSet::from(["edge:1".into()]));
-        let alerts = store.snapshot().alerts;
-        assert!(!alerts.contains_key("edge:1:offline"));
-        assert!(alerts.contains_key("edge:10:offline"));
+        store.purge_hosts(&HashSet::from(["edge".into()]));
+        let state = store.snapshot();
+        assert!(!state.hosts.contains_key("edge"));
+        assert!(state.hosts.contains_key("edge:1"));
+        assert!(!state.alerts.contains_key("edge:offline"));
+        assert!(state.alerts.contains_key("edge:1:offline"));
 
         remove_file_if_present(&path);
     }
