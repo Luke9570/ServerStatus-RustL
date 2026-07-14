@@ -154,26 +154,36 @@ async fn main() -> Result<(), anyhow::Error> {
     *notifier::NOTIFIER_HANDLE.lock().unwrap() = Some(Handle::current());
     let cfg = G_CONFIG.get().unwrap();
     let notifies: Arc<Mutex<Vec<Box<dyn notifier::Notifier + Send>>>> = Arc::new(Mutex::new(Vec::new()));
-    let o = Box::new(notifier::tgbot::TGBot::new(&cfg.tgbot));
+    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
+        notifier::tgbot::TGBot::new(&cfg.tgbot),
+        || admin::effective_tgbot_config(&cfg.tgbot).is_ready(),
+    )));
     notifies.lock().unwrap().push(o);
-    if cfg.wechat.enabled {
-        let o = Box::new(notifier::wechat::WeChat::new(&cfg.wechat));
-        notifies.lock().unwrap().push(o);
-    }
-    if cfg.email.enabled {
-        let o = Box::new(notifier::email::Email::new(&cfg.email));
-        notifies.lock().unwrap().push(o);
-    }
-    let o = Box::new(notifier::bark::Bark::new(&cfg.bark));
+    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
+        notifier::bark::Bark::new(&cfg.bark),
+        || admin::effective_bark_config(&cfg.bark).is_ready(),
+    )));
     notifies.lock().unwrap().push(o);
-    if cfg.log.enabled {
-        let o = Box::new(notifier::log::Log::new(&cfg.log));
-        notifies.lock().unwrap().push(o);
-    }
-    if cfg.webhook.enabled {
-        let o = Box::new(notifier::webhook::Webhook::new(&cfg.webhook));
-        notifies.lock().unwrap().push(o);
-    }
+    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
+        notifier::wechat::WeChat::new(&cfg.wechat),
+        || admin::effective_wechat_config(&cfg.wechat).is_ready(),
+    )));
+    notifies.lock().unwrap().push(o);
+    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
+        notifier::email::Email::new(&cfg.email),
+        || admin::effective_email_config(&cfg.email).is_ready(),
+    )));
+    notifies.lock().unwrap().push(o);
+    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
+        notifier::webhook::Webhook::new(&cfg.webhook),
+        || admin::effective_webhook_override(&cfg.webhook).is_ready(),
+    )));
+    notifies.lock().unwrap().push(o);
+    let o = Box::new(notifier::IsolatedNotifier::new(notifier::ReadinessGate::new(
+        notifier::log::Log::new(&cfg.log),
+        || admin::effective_log_config(&cfg.log).is_ready(),
+    )));
+    notifies.lock().unwrap().push(o);
     // init notifier end
 
     // notify test
