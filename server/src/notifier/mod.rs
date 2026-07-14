@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
 use reqwest::{Response, StatusCode};
 use serde::Serialize;
+use std::fmt::{Display, Formatter};
 use std::future::Future;
 use std::sync::Mutex;
 use tokio::runtime::Handle;
@@ -18,6 +19,39 @@ pub mod wechat;
 
 pub static NOTIFIER_HANDLE: Lazy<Mutex<Option<Handle>>> = Lazy::new(Default::default);
 pub(crate) const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotificationTestError {
+    UnsupportedKind,
+    InvalidConfiguration,
+    DeliveryFailed,
+}
+
+impl Display for NotificationTestError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::UnsupportedKind => "notification type is unsupported",
+            Self::InvalidConfiguration => "notification configuration is invalid",
+            Self::DeliveryFailed => "notification delivery failed",
+        })
+    }
+}
+
+impl std::error::Error for NotificationTestError {}
+
+pub(crate) type NotificationTestResult = std::result::Result<(), NotificationTestError>;
+
+pub(crate) async fn test_effective_notification(kind: &str, config: &crate::config::Config) -> NotificationTestResult {
+    match kind {
+        "tgbot" | "telegram" | "tg" => tgbot::test(&crate::admin::effective_tgbot_config(&config.tgbot)).await,
+        "bark" => bark::test(&crate::admin::effective_bark_config(&config.bark)).await,
+        "wechat" => wechat::test(&crate::admin::effective_wechat_config(&config.wechat)).await,
+        "email" => email::test(&crate::admin::effective_email_config(&config.email)).await,
+        "webhook" => webhook::test(&crate::admin::effective_webhook_override(&config.webhook)).await,
+        "log" => log::test(&crate::admin::effective_log_config(&config.log)).await,
+        _ => Err(NotificationTestError::UnsupportedKind),
+    }
+}
 
 pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
     status == StatusCode::REQUEST_TIMEOUT || status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
@@ -265,6 +299,29 @@ mod tests {
         );
 
         assert_eq!(detail, "[redacted] Authorization: [redacted]");
+    }
+
+    #[tokio::test]
+    async fn effective_notification_tests_reject_incomplete_configs_for_every_supported_kind() {
+        let config: crate::config::Config = toml::from_str("").unwrap();
+
+        for kind in ["tgbot", "bark", "wechat", "email", "webhook", "log"] {
+            assert_eq!(
+                test_effective_notification(kind, &config).await,
+                Err(NotificationTestError::InvalidConfiguration),
+                "kind={kind}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_notification_tests_report_unsupported_kinds_without_config_details() {
+        let config: crate::config::Config = toml::from_str("").unwrap();
+
+        let error = test_effective_notification("unknown", &config).await.unwrap_err();
+
+        assert_eq!(error, NotificationTestError::UnsupportedKind);
+        assert_eq!(error.to_string(), "notification type is unsupported");
     }
 
     async fn transient_then_success(State(attempts): State<Arc<AtomicUsize>>) -> StatusCode {

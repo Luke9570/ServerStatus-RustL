@@ -7,7 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::notifier::{Event, HostStat};
+use crate::notifier::{Event, HostStat, NotificationTestError, NotificationTestResult};
 
 const KIND: &str = "log";
 
@@ -78,6 +78,13 @@ impl crate::notifier::Notifier for Log {
         let content = render_content(&config, e, stat)?;
         Self::send_with_config(&config, &content)
     }
+}
+
+pub(crate) async fn test(config: &Config) -> NotificationTestResult {
+    if !config.is_ready() || render_content(config, &Event::Custom, &HostStat::default()).is_err() {
+        return Err(NotificationTestError::InvalidConfiguration);
+    }
+    Log::send_with_config(config, "❗ServerStatus test msg").map_err(|_| NotificationTestError::DeliveryFailed)
 }
 
 fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<String> {

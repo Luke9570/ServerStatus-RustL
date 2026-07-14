@@ -8,7 +8,9 @@ use serde_json;
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::notifier::{redact_secrets, send_with_retry, Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{
+    redact_secrets, send_with_retry, Event, HostStat, NotificationTestError, NotificationTestResult, NOTIFIER_HANDLE,
+};
 
 // https://qydev.weixin.qq.com/wiki/index.php?title=%E4%B8%BB%E5%8A%A8%E8%B0%83%E7%94%A8
 // https://qydev.weixin.qq.com/wiki/index.php?title=%E5%8F%91%E9%80%81%E6%8E%A5%E5%8F%A3%E8%AF%B4%E6%98%8E
@@ -57,13 +59,7 @@ impl WeChat {
         if !config.enabled {
             return Ok(());
         }
-        if !config.is_ready() {
-            return Err(anyhow!("WeChat notifier is not ready"));
-        }
-
-        let mut data = HashMap::new();
-        data.insert("corpid", config.corp_id.clone());
-        data.insert("corpsecret", config.corp_secret.clone());
+        let (data, agent_id) = prepare_delivery(config)?;
 
         let http_client = self.http_client.clone();
         let handle = NOTIFIER_HANDLE
@@ -72,7 +68,6 @@ impl WeChat {
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow!("notification runtime is unavailable"))?;
-        let agent_id = config.agent_id.clone();
         let secrets = [
             config.corp_id.clone(),
             config.corp_secret.clone(),
@@ -90,6 +85,59 @@ impl WeChat {
 
         Ok(())
     }
+}
+
+pub(crate) async fn test(config: &Config) -> NotificationTestResult {
+    test_with_endpoints(config, TOKEN_URL, SEND_URL).await
+}
+
+async fn test_with_endpoints(
+    config: &Config,
+    token_endpoint: &str,
+    send_endpoint: &str,
+) -> NotificationTestResult {
+    validate_test_config(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    let (data, agent_id) = prepare_delivery(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    deliver_wechat(
+        &reqwest::Client::new(),
+        token_endpoint,
+        send_endpoint,
+        &data,
+        &agent_id,
+        "❗ServerStatus test msg",
+    )
+    .await
+    .map_err(|_| NotificationTestError::DeliveryFailed)
+}
+
+fn prepare_delivery(config: &Config) -> Result<(HashMap<&'static str, String>, String)> {
+    if !config.is_ready() {
+        return Err(anyhow!("WeChat notifier is not ready"));
+    }
+    Ok((
+        HashMap::from([
+            ("corpid", config.corp_id.clone()),
+            ("corpsecret", config.corp_secret.clone()),
+        ]),
+        config.agent_id.clone(),
+    ))
+}
+
+fn validate_test_config(config: &Config) -> Result<()> {
+    if !config.is_ready() {
+        return Err(anyhow!("WeChat notifier is not ready"));
+    }
+    let stat = HostStat::default();
+    for event in [
+        Event::NodeUp,
+        Event::NodeDown,
+        Event::Custom,
+        Event::Expire,
+        Event::Health,
+    ] {
+        render_content(config, &event, &stat)?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

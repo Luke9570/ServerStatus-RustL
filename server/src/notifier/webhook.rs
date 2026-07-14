@@ -4,13 +4,17 @@ use anyhow::Result;
 use chrono::Local;
 use minijinja::context;
 use reqwest;
+use reqwest::header::{HeaderName, HeaderValue};
 use rhai::serde::{from_dynamic, to_dynamic};
 use rhai::{Array, Dynamic, Engine, ImmutableString, Scope, AST};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::notifier::{get_tag, redact_secrets, send_with_retry, Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{
+    get_tag, redact_secrets, send_with_retry, Event, HostStat, NotificationTestError, NotificationTestResult,
+    NOTIFIER_HANDLE,
+};
 
 const KIND: &str = "webhook";
 
@@ -253,6 +257,84 @@ impl crate::notifier::Notifier for Webhook {
             }
         }
     }
+}
+
+pub(crate) async fn test(config: &crate::admin::EffectiveWebhookConfig) -> NotificationTestResult {
+    match config {
+        crate::admin::EffectiveWebhookConfig::Legacy(config) => test_legacy(config).await,
+        crate::admin::EffectiveWebhookConfig::Structured(config) => test_structured(config).await,
+    }
+}
+
+async fn test_legacy(config: &Config) -> NotificationTestResult {
+    validate_legacy_test_config(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    let http_client = reqwest::Client::new();
+    let mut succeeded = 0_usize;
+    for receiver in config.receiver.iter().filter(|receiver| receiver.enabled) {
+        if deliver_legacy_receiver(&http_client, receiver, "❗ServerStatus test msg".to_string())
+            .await
+            .is_ok()
+        {
+            succeeded += 1;
+        }
+    }
+    if succeeded == 0 {
+        Err(NotificationTestError::DeliveryFailed)
+    } else {
+        Ok(())
+    }
+}
+
+async fn test_structured(config: &crate::admin::StructuredWebhookOverride) -> NotificationTestResult {
+    if !config.is_ready() || crate::admin::validate_structured_webhook(config).is_err() {
+        return Err(NotificationTestError::InvalidConfiguration);
+    }
+
+    let stat = HostStat::default();
+    let mut deliveries = Vec::new();
+    for receiver in config.receivers.iter().filter(|receiver| receiver.enabled) {
+        let content = render_structured_body(receiver, &Event::Custom, &stat)
+            .map_err(|_| NotificationTestError::InvalidConfiguration)?;
+        deliveries.push((receiver, content));
+    }
+
+    let http_client = reqwest::Client::new();
+    let mut succeeded = 0_usize;
+    for (receiver, content) in deliveries {
+        if deliver_structured_receiver(&http_client, receiver, content).await.is_ok() {
+            succeeded += 1;
+        }
+    }
+    if succeeded == 0 {
+        Err(NotificationTestError::DeliveryFailed)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_legacy_test_config(config: &Config) -> Result<()> {
+    if !config.is_ready() {
+        anyhow::bail!("legacy webhook notifier is not ready");
+    }
+    let engine = Engine::new();
+    for receiver in config.receiver.iter().filter(|receiver| receiver.enabled) {
+        let url = reqwest::Url::parse(&receiver.url).map_err(|_| anyhow::anyhow!("invalid legacy webhook URL"))?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            anyhow::bail!("invalid legacy webhook URL");
+        }
+        if !(1..=60).contains(&receiver.timeout) {
+            anyhow::bail!("invalid legacy webhook timeout");
+        }
+        engine
+            .compile(&receiver.script)
+            .map_err(|_| anyhow::anyhow!("invalid legacy webhook script"))?;
+        for (name, value) in &receiver.headers {
+            name.parse::<HeaderName>()
+                .map_err(|_| anyhow::anyhow!("invalid legacy webhook header"))?;
+            HeaderValue::from_str(value).map_err(|_| anyhow::anyhow!("invalid legacy webhook header"))?;
+        }
+    }
+    Ok(())
 }
 
 async fn deliver_legacy_receiver(http_client: &reqwest::Client, receiver: &Receiver, content: String) -> Result<()> {

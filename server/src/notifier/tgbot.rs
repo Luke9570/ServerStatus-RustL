@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::notifier::{redact_secrets, send_with_retry, Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{
+    redact_secrets, send_with_retry, Event, HostStat, NotificationTestError, NotificationTestResult, NOTIFIER_HANDLE,
+};
 
 const KIND: &str = "tgbot";
 
@@ -51,16 +53,7 @@ impl TGBot {
         if !config.enabled {
             return Ok(());
         }
-        if !config.is_ready() {
-            return Err(anyhow!("Telegram notifier is not ready"));
-        }
-
-        let mut data = HashMap::new();
-        data.insert("chat_id", config.chat_id.clone());
-        data.insert("parse_mode", "HTML".to_string());
-        data.insert("text", html_content);
-
-        let tg_url = format!("https://api.telegram.org/bot{}/sendMessage", config.bot_token);
+        let (tg_url, data) = prepare_delivery(config, html_content)?;
         let handle = NOTIFIER_HANDLE
             .lock()
             .map_err(|_| anyhow!("notification runtime lock is unavailable"))?
@@ -83,6 +76,49 @@ impl TGBot {
 
         Ok(())
     }
+}
+
+pub(crate) async fn test(config: &Config) -> NotificationTestResult {
+    let endpoint = format!("https://api.telegram.org/bot{}/sendMessage", config.bot_token);
+    test_with_endpoint(config, &endpoint).await
+}
+
+async fn test_with_endpoint(config: &Config, endpoint: &str) -> NotificationTestResult {
+    validate_test_config(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    let (_, data) = prepare_delivery(config, "❗ServerStatus test msg".to_string())
+        .map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    deliver_telegram(&reqwest::Client::new(), endpoint, &data)
+        .await
+        .map_err(|_| NotificationTestError::DeliveryFailed)
+}
+
+fn prepare_delivery(config: &Config, html_content: String) -> Result<(String, HashMap<&'static str, String>)> {
+    if !config.is_ready() {
+        return Err(anyhow!("Telegram notifier is not ready"));
+    }
+    let mut data = HashMap::new();
+    data.insert("chat_id", config.chat_id.clone());
+    data.insert("parse_mode", "HTML".to_string());
+    data.insert("text", html_content);
+    let endpoint = format!("https://api.telegram.org/bot{}/sendMessage", config.bot_token);
+    Ok((endpoint, data))
+}
+
+fn validate_test_config(config: &Config) -> Result<()> {
+    if !config.is_ready() {
+        return Err(anyhow!("Telegram notifier is not ready"));
+    }
+    let stat = HostStat::default();
+    for event in [
+        Event::NodeUp,
+        Event::NodeDown,
+        Event::Custom,
+        Event::Expire,
+        Event::Health,
+    ] {
+        render_content(config, &event, &stat)?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

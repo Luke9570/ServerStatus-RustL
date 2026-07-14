@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::notifier::{redact_secrets, send_with_retry, Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{
+    redact_secrets, send_with_retry, Event, HostStat, NotificationTestError, NotificationTestResult, NOTIFIER_HANDLE,
+};
 
 const KIND: &str = "bark";
 
@@ -188,6 +190,32 @@ impl crate::notifier::Notifier for Bark {
         let config = crate::admin::effective_bark_config(self.config);
         self.send_with_config(&config, "❗ServerStatus test msg".to_string())
     }
+}
+
+pub(crate) async fn test(config: &Config) -> NotificationTestResult {
+    validate_test_config(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    let (endpoint, payload, timeout) = prepare_delivery(config, "❗ServerStatus test msg".to_string())
+        .map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    deliver_bark(&reqwest::Client::new(), &endpoint, timeout, &payload)
+        .await
+        .map_err(|_| NotificationTestError::DeliveryFailed)
+}
+
+fn validate_test_config(config: &Config) -> Result<()> {
+    if !config.is_ready() {
+        return Err(anyhow!("Bark notifier is not ready"));
+    }
+    let stat = HostStat::default();
+    for event in [
+        Event::NodeUp,
+        Event::NodeDown,
+        Event::Custom,
+        Event::Expire,
+        Event::Health,
+    ] {
+        render_content(config, &event, &stat)?;
+    }
+    Ok(())
 }
 
 async fn deliver_bark(

@@ -9,7 +9,7 @@ use log::{error, info};
 use minijinja::context;
 use serde::{Deserialize, Serialize};
 
-use crate::notifier::{Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{Event, HostStat, NotificationTestError, NotificationTestResult, NOTIFIER_HANDLE};
 
 const KIND: &str = "email";
 
@@ -52,17 +52,7 @@ impl Email {
         if !config.enabled {
             return Ok(());
         }
-        if !config.is_ready() {
-            return Err(anyhow!("email notifier is not ready"));
-        }
-
-        let email = build_message(config, &html_content)?;
-        let creds = Credentials::new(config.username.clone(), config.password.clone());
-        let mailer: AsyncSmtpTransport<Tokio1Executor> =
-            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.server)
-                .map_err(|_| anyhow!("invalid SMTP relay"))?
-                .credentials(creds)
-                .build();
+        let (mailer, email) = prepare_delivery(config, &html_content)?;
         let handle = NOTIFIER_HANDLE
             .lock()
             .map_err(|_| anyhow!("notification runtime lock is unavailable"))?
@@ -71,9 +61,9 @@ impl Email {
             .ok_or_else(|| anyhow!("notification runtime is unavailable"))?;
 
         handle.spawn(async move {
-            match mailer.send(email).await {
-                Ok(_) => info!("email sent successfully"),
-                Err(_) => error!("email delivery failed"),
+            match deliver_email(&mailer, email).await {
+                Ok(()) => info!("email sent successfully"),
+                Err(()) => error!("email delivery failed"),
             }
         });
 
@@ -116,6 +106,49 @@ impl crate::notifier::Notifier for Email {
         let config = crate::admin::effective_email_config(self.config);
         Self::send_with_config(&config, "❗ServerStatus test msg".to_string())
     }
+}
+
+pub(crate) async fn test(config: &Config) -> NotificationTestResult {
+    validate_test_config(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    let (mailer, email) = prepare_delivery(config, "❗ServerStatus test msg")
+        .map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    deliver_email(&mailer, email)
+        .await
+        .map_err(|()| NotificationTestError::DeliveryFailed)
+}
+
+fn prepare_delivery(config: &Config, html_content: &str) -> Result<(AsyncSmtpTransport<Tokio1Executor>, Message)> {
+    if !config.is_ready() {
+        return Err(anyhow!("email notifier is not ready"));
+    }
+    let email = build_message(config, html_content)?;
+    let creds = Credentials::new(config.username.clone(), config.password.clone());
+    let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.server)
+        .map_err(|_| anyhow!("invalid SMTP relay"))?
+        .credentials(creds)
+        .build();
+    Ok((mailer, email))
+}
+
+async fn deliver_email(mailer: &AsyncSmtpTransport<Tokio1Executor>, email: Message) -> std::result::Result<(), ()> {
+    mailer.send(email).await.map(|_| ()).map_err(|_| ())
+}
+
+fn validate_test_config(config: &Config) -> Result<()> {
+    if !config.is_ready() {
+        return Err(anyhow!("email notifier is not ready"));
+    }
+    let stat = HostStat::default();
+    for event in [
+        Event::NodeUp,
+        Event::NodeDown,
+        Event::Custom,
+        Event::Expire,
+        Event::Health,
+    ] {
+        render_content(config, &event, &stat)?;
+    }
+    Ok(())
 }
 
 fn build_message(config: &Config, html_content: &str) -> Result<Message> {
