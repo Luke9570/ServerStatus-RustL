@@ -17,6 +17,7 @@ admin_pass = "" # 留空时启动会随机生成；正式部署请设置强密�
 # hosts 跟 hosts_group 两种配置模式任挑一种配置即可。默认不预置可接入节点，避免示例密码被误用。
 # name 主机唯一标识，不可重复，alias 为展示名
 # notify = false 单独禁止单台机器的告警，一般针对网络差，频繁上下线
+# 已认证主机即使离线也会保留；只有后台删除才会移除主机记录和主页显示。
 # monthstart = 1 没启用vnstat时，表示月流量从每月哪天开始统计
 # disabled = true 单机禁用
 # location 支持国旗 emoji https://emojixd.com/group/flags
@@ -40,18 +41,19 @@ hosts_group = [
   # 也可以手动配置，例如：
   # {gid = "default", password = "<agent-password>", location = "us", type = "kvm", billing = {end_date = "2026-12-31", auto_renewal = "1", cycle = "Year", amount = "200EUR"}, labels = "spec=2C/4G/60G;"},
 ]
-# 动态注册模式下，无效数据清理间隔，默认 30s
-# 这个设置要比较通知间隔 notify_interval 大，不然收不到告警通知
+# 兼容旧配置的动态组 GC 间隔，默认 30s。
+# 当前不会因离线或此设置删除已认证主机；主机记录仅由后台删除操作移除。
 group_gc = 30
 
 # !!! 一键部署如果没问题则不需要动，Server 会自行根据你的域名生成 server_url
 # 修正一键部署，请自行替换 ssr.rs 为你的域名,
-# server_url = "https://ssr.rs/report"
-# stat_client 默认安装的路径
+# server_url = "https://example.invalid/report"
+# stat_client 默认安装的路径；运行时状态保存在 ${workspace}/runtime-state.json。
 workspace = "/opt/ServerStatus"
 
 # 不开启告警，可忽略后面配置，或者删除不需的通知方式
-# 告警间隔默认为30s
+# 告警间隔默认为30s。告警规则只选择已启用且配置完整的通知方式；
+# 没有任何就绪方式时不伪造投递选择，也不会发送通知。
 notify_interval = 30
 
 # Subscription expiration notification.
@@ -120,7 +122,7 @@ VPS 到期提醒: {{host.alias}}
 """
 ###################### bark end ##########################
 
-## 可选 单纯记录 event 到日志文件，调试自定义告警使用
+## 可选：本地日志通知，单纯记录 event 到日志文件
 [log]
 enabled = false
 log_dir = "/opt/ServerStatus/logs"
@@ -128,7 +130,7 @@ tpl = """{% set obj = dict(event=event, host=host, ip_info=ip_info, sys_info=sys
 
 ###################### log end ##########################
 
-## 可选 微信通知
+## 可选：企业微信通知
 [wechat]
 enabled = false
 corp_id = "<corp id>"
@@ -148,13 +150,13 @@ custom_tpl = """
 """
 ###################### wechat end ##########################
 
-## 可选 邮件通知
+## 可选：SMTP Email 通知
 [email]
 enabled = false
 server = "smtp.gmail.com"
-username = "user@email.com"
-password = "***"
-to = "user1@email.com;user2@email.com"
+username = "<smtp-username>"
+password = "<smtp-password>"
+to = "<recipient-email>"
 subject = "ServerStatus Notification"
 title = "❗<b>Server Status</b><br/>"
 online_tpl  = "{{config.title}} 😆 {{host.location}} 的 {{host.name}} 主机恢复上线啦"
@@ -171,10 +173,10 @@ custom_tpl = """
 
 ###################### email end ##########################
 
-## 可选 webhook
-# 理论上支持所有支持 webhook 的软件，如 Discord、 Slack、 飞书、 企业版微信(WorkWechat)、 钉钉(DingTalk)等。
-# webhook 调用基本上都差不多，差异只在最后返回的 json 结构，根据各自的 api 文档自行构建相应的 json 结构即可。
-# script 使用脚本引擎 https://rhai.rs/book/
+## 可选：legacy Webhook，仅在 config.toml 中配置
+# 管理后台的 Webhook 是另一套结构化配置，只接受 MiniJinja 模板；本段 Rhai
+# script 仅为旧配置兼容保留。不要把真实 URL、认证信息或脚本秘密提交到 Git。
+# 理论上支持所有提供 webhook 的软件，如 Discord、Slack、飞书、企业微信、钉钉等。
 [webhook]
 # 总开关
 enabled = false
@@ -182,13 +184,12 @@ enabled = false
   [[webhook.receiver]] # 通用型 webhook
   # 局部开关
   enabled = false
-  # https://webhook.site/#!/2b1ad731-45fe-49a8-ae91-614167019db2
-  url = "https://webhook.site/2b1ad731-45fe-49a8-ae91-614167019db2"
-  headers = { content-type = "application/json", x-data = "y-data" }
+  url = "https://example.invalid/webhook"
+  headers = { content-type = "application/json", x-data = "<header-value>" }
   # headers = { content-type = "text/plain" }
   # 可选 HTTP Basic Auth
-  username = "u"
-  password = "p"
+  username = "<basic-auth-user>"
+  password = "<basic-auth-password>"
   timeout = 5 #s
   # 简单发送一个 json 对象，#{} 为 Object 对象, [] 为数组
   # 最终结果, 固定结构 [是否发送通知，结果对象]
@@ -197,7 +198,7 @@ enabled = false
   [[webhook.receiver]] # Discord
   enabled = false
   # https://discord.com/developers/docs/resources/webhook
-  url = "https://discord.com/api/webhooks/xxxxxxxxxxxxxxxxxxxxxxx"
+  url = "https://discord.example.invalid/webhook"
   headers = { content-type = "application/json" }
   timeout = 5 #s
   script = """
@@ -239,7 +240,7 @@ enabled = false
   [[webhook.receiver]] # Slack
   enabled = false
   # https://api.slack.com/messaging/webhooks
-  url = "https://hooks.slack.com/services/xxxxxxxxxxxxxxxxxxxxxxx"
+  url = "https://slack.example.invalid/webhook"
   headers = { content-type = "application/json" }
   timeout = 5 #s
   script = """
@@ -273,7 +274,7 @@ enabled = false
   [[webhook.receiver]] # WorkWechat
   enabled = false
   # https://developer.work.weixin.qq.com/document/path/91770
-  url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxxxxxxxxxxxxxxxxx"
+  url = "https://qyapi.weixin.example.invalid/webhook?key=<webhook-key>"
   headers = { content-type = "application/json" }
   timeout = 5 #s
   script = """
@@ -313,7 +314,7 @@ enabled = false
   enabled = false
   # https://github.com/Finb/Bark
   # https://day.app/2021/06/barkfaq/
-  url = "https://api.day.app/push"
+  url = "https://bark.example.invalid/push"
   headers = { content-type = "application/json; charset=utf-8" }
   timeout = 5 #s
   script = """
@@ -348,7 +349,7 @@ enabled = false
       // 告警内容
       body: message,
       // 修改成你的设备 key, app 内获取
-      device_key: "fLLBrV****kM5H",
+      device_key: "<bark-device-key>",
       // 后面为可选字段参考 https://github.com/Finb/bark-server/blob/master/docs/API_V2.md
       // 其它角标, 铃声, icon, 参考 app 里面的说明即可
       badge: 1,
