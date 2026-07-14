@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -244,13 +245,21 @@ impl RuntimeStateStore {
             let state = self.inner.lock().unwrap();
             (serde_json::to_vec_pretty(&state.state)?, state.generation)
         };
-        if let Some(parent) = self.path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)?;
-        }
+        fs::create_dir_all(runtime_state_parent_directory(&self.path))?;
 
         let temporary = self.path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
-        fs::write(&temporary, payload)?;
-        File::open(&temporary)?.sync_all()?;
+        let write_result = (|| -> Result<()> {
+            let mut file = File::create(&temporary)?;
+            file.write_all(&payload)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(err) = write_result {
+            if temporary.exists() {
+                let _ = fs::remove_file(&temporary);
+            }
+            return Err(err);
+        }
         before_publish();
 
         let _publication = self.publication_lock.lock().unwrap();
@@ -260,9 +269,27 @@ impl RuntimeStateStore {
             fs::remove_file(&temporary)?;
             return Ok(SaveResult::Skipped);
         }
-        fs::rename(temporary, &self.path)?;
+        // The file is synced before rename; sync the parent after publishing its directory entry.
+        if let Err(err) = fs::rename(&temporary, &self.path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(err.into());
+        }
+        sync_parent_directory(&self.path)?;
         Ok(SaveResult::Published)
     }
+}
+
+fn runtime_state_parent_directory(path: &Path) -> &Path {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
+}
+
+fn sync_parent_directory(path: &Path) -> Result<()> {
+    let parent = runtime_state_parent_directory(path);
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = parent;
+    Ok(())
 }
 
 pub fn import_legacy_stats(path: &Path, deleted_hosts: &HashSet<String>) -> Vec<KnownHost> {
@@ -319,7 +346,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use super::{import_legacy_stats, AlertState, KnownHost, RuntimeStateStore, SaveResult};
+    use super::{import_legacy_stats, sync_parent_directory, AlertState, KnownHost, RuntimeStateStore, SaveResult};
     use crate::payload::HostStat;
 
     fn temporary_path(name: &str) -> PathBuf {
@@ -504,5 +531,16 @@ mod tests {
         assert!(alerts.contains_key("edge:10:offline"));
 
         remove_file_if_present(&path);
+    }
+
+    #[test]
+    fn runtime_state_parent_directory_sync_succeeds() {
+        let directory = temporary_path("runtime-parent-sync");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("runtime-state.json");
+
+        sync_parent_directory(&path).unwrap();
+
+        fs::remove_dir(&directory).unwrap();
     }
 }

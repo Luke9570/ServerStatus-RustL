@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::mpsc::SyncSender;
@@ -75,6 +76,7 @@ pub struct StatsMgr {
     stat_map: Arc<Mutex<HashMap<String, Arc<HostStat>>>>,
     hosts_map: Arc<Mutex<HashMap<String, Host>>>,
     runtime_state: Arc<Mutex<Option<Arc<RuntimeStateStore>>>>,
+    stats_snapshot_path: PathBuf,
     // Lock order for host removal and re-reporting is lifecycle -> publication -> live maps -> runtime/expiry state.
     // Report handling takes lifecycle before reading deleted markers and keeps it through insertion.
     lifecycle_lock: Arc<Mutex<()>>,
@@ -85,12 +87,17 @@ pub struct StatsMgr {
 
 impl StatsMgr {
     pub fn new() -> Self {
+        Self::new_with_stats_snapshot_path(PathBuf::from("stats.json"))
+    }
+
+    fn new_with_stats_snapshot_path(stats_snapshot_path: PathBuf) -> Self {
         Self {
             resp_json: Arc::new(Mutex::new("{}".to_string())),
             stats_data: Arc::new(Mutex::new(StatsResp::new())),
             stat_map: Arc::new(Mutex::new(HashMap::new())),
             hosts_map: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(None)),
+            stats_snapshot_path,
             lifecycle_lock: Arc::new(Mutex::new(())),
             publication_generation: Arc::new(AtomicU64::new(0)),
             publication_lock: Arc::new(Mutex::new(())),
@@ -129,21 +136,32 @@ impl StatsMgr {
         }
     }
 
-    fn save_stats_snapshot(resp: &StatsResp) {
-        match File::create("stats.json") {
-            Ok(mut file) => {
-                let write_result = serde_json::to_string(resp)
-                    .map_err(std::io::Error::other)
-                    .and_then(|data| file.write_all(data.as_bytes()))
-                    .and_then(|_| file.flush());
-                if write_result.is_ok() {
-                    trace!("save stats.json succ!");
-                } else {
-                    error!("save stats.json fail!");
-                }
-            }
-            Err(_) => error!("save stats.json fail!"),
+    fn save_stats_snapshot(resp: &StatsResp) -> Result<()> {
+        Self::save_stats_snapshot_to_path(Path::new("stats.json"), resp)
+    }
+
+    fn save_stats_snapshot_to_path(path: &Path, resp: &StatsResp) -> Result<()> {
+        let payload = serde_json::to_vec(resp)?;
+        let parent = snapshot_parent_directory(path);
+        fs::create_dir_all(parent)?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("stats snapshot path has no file name"))?
+            .to_string_lossy();
+        let temporary = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+        let write_result = (|| -> Result<()> {
+            let mut file = File::create(&temporary)?;
+            file.write_all(&payload)?;
+            file.sync_all()?;
+            drop(file);
+            // Persist file contents before publishing its name, then persist the directory entry.
+            fs::rename(&temporary, path)?;
+            sync_snapshot_parent_directory(path)
+        })();
+        if write_result.is_err() && temporary.exists() {
+            let _ = fs::remove_file(&temporary);
         }
+        write_result
     }
 
     #[allow(clippy::too_many_lines)]
@@ -607,20 +625,18 @@ impl StatsMgr {
         if let Ok(mut expire_notify_state) = self.expire_notify_state.lock() {
             expire_notify_state.retain(|name, _| !hosts.contains(name));
         }
-        let public_json = if let Ok(mut stats_data) = self.stats_data.lock() {
+        let public_save_result = if let Ok(mut stats_data) = self.stats_data.lock() {
             stats_data.servers.retain(|stat| !hosts.contains(&stat.name));
             let public_json = serde_json::to_string(&*stats_data).unwrap_or_else(|_| "{}".to_string());
-            Self::save_stats_snapshot(&stats_data);
-            Some(public_json)
-        } else {
-            None
-        };
-        if let Some(public_json) = public_json {
+            let save_result = Self::save_stats_snapshot_to_path(&self.stats_snapshot_path, &stats_data);
             if let Ok(mut resp_json) = self.resp_json.lock() {
                 *resp_json = public_json;
             }
-        }
-        runtime_save_result
+            save_result
+        } else {
+            Err(anyhow::anyhow!("failed to lock public stats cache during purge"))
+        };
+        runtime_save_result.and(public_save_result)
     }
 
     pub fn refresh_admin_overrides(&self) {
@@ -719,6 +735,19 @@ impl StatsMgr {
 
         Ok(resp_json)
     }
+}
+
+fn snapshot_parent_directory(path: &Path) -> &Path {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
+}
+
+fn sync_snapshot_parent_directory(path: &Path) -> Result<()> {
+    let parent = snapshot_parent_directory(path);
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = parent;
+    Ok(())
 }
 
 fn collect_alert_events(
@@ -910,7 +939,9 @@ fn publish_snapshot_if_current(
         return false;
     }
     if save_snapshot {
-        StatsMgr::save_stats_snapshot(&resp);
+        if let Err(err) = StatsMgr::save_stats_snapshot(&resp) {
+            warn!("failed to save stats snapshot: {err}");
+        }
     }
     if let Ok(mut data) = stats_data.lock() {
         *data = resp;
@@ -1669,6 +1700,85 @@ mod tests {
 
         assert_eq!(mutation_count.load(std::sync::atomic::Ordering::SeqCst), 1);
         std::fs::remove_file(&runtime_path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_save_publishes_atomically_to_an_injected_path() {
+        let directory = std::env::temp_dir().join(format!("ssr-stats-snapshot-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("stats.json");
+
+        StatsMgr::save_stats_snapshot_to_path(&path, &StatsResp::new()).unwrap();
+
+        let snapshot: StatsResp = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(snapshot.servers.is_empty());
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+    }
+
+    #[test]
+    fn snapshot_save_rejects_an_invalid_parent_path() {
+        let invalid_parent = std::env::temp_dir().join(format!("ssr-stats-parent-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&invalid_parent, "not a directory").unwrap();
+
+        let result = StatsMgr::save_stats_snapshot_to_path(&invalid_parent.join("stats.json"), &StatsResp::new());
+
+        assert!(result.is_err());
+        std::fs::remove_file(&invalid_parent).unwrap();
+    }
+
+    #[test]
+    fn public_snapshot_failure_defers_marker_mutation_until_retry() {
+        let invalid_parent = std::env::temp_dir().join(format!("ssr-purge-stats-parent-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&invalid_parent, "not a directory").unwrap();
+        let snapshot_path = invalid_parent.join("stats.json");
+        let mgr = StatsMgr::new_with_stats_snapshot_path(snapshot_path.clone());
+        mgr.hosts_map.lock().unwrap().insert(
+            "srv-gone".into(),
+            Host {
+                name: "srv-gone".into(),
+                ..Default::default()
+            },
+        );
+        mgr.stat_map.lock().unwrap().insert(
+            "srv-gone".into(),
+            Arc::new(HostStat {
+                name: "srv-gone".into(),
+                ..Default::default()
+            }),
+        );
+        mgr.stats_data.lock().unwrap().servers.push(Arc::new(HostStat {
+            name: "srv-gone".into(),
+            ..Default::default()
+        }));
+
+        let mutation_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = mgr.purge_hosts_transaction(&HashSet::from(["srv-gone".into()]), {
+            let mutation_count = Arc::clone(&mutation_count);
+            move || {
+                mutation_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        });
+
+        assert!(result.is_err());
+        assert_eq!(mutation_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!mgr.get_stats_json().contains("srv-gone"));
+
+        std::fs::remove_file(&invalid_parent).unwrap();
+        mgr.purge_hosts_transaction(&HashSet::from(["srv-gone".into()]), {
+            let mutation_count = Arc::clone(&mutation_count);
+            move || {
+                mutation_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .unwrap();
+
+        assert_eq!(mutation_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::fs::remove_file(&snapshot_path).unwrap();
+        std::fs::remove_dir(&invalid_parent).unwrap();
     }
 
     #[test]
