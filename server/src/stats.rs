@@ -545,15 +545,14 @@ impl StatsMgr {
         self.resp_json.lock().unwrap().to_string()
     }
 
-    pub fn purge_hosts(&self, hosts: &HashSet<String>) {
-        self.with_host_lifecycle(|| self.purge_hosts_locked(hosts, || {}));
+    pub fn purge_hosts(&self, hosts: &HashSet<String>) -> Result<()> {
+        self.with_host_lifecycle(|| self.purge_hosts_locked(hosts, || {}))
     }
 
     pub fn purge_hosts_transaction<T>(&self, hosts: &HashSet<String>, mutate: impl FnOnce() -> Result<T>) -> Result<T> {
         self.with_host_lifecycle(|| {
-            let result = mutate()?;
-            self.purge_hosts_locked(hosts, || {});
-            Ok(result)
+            self.purge_hosts_locked(hosts, || {})?;
+            mutate()
         })
     }
 
@@ -562,19 +561,27 @@ impl StatsMgr {
         action()
     }
 
-    fn purge_hosts_with_after_generation(&self, hosts: &HashSet<String>, after_generation: impl FnOnce()) {
-        self.with_host_lifecycle(|| self.purge_hosts_locked(hosts, after_generation));
+    fn purge_hosts_with_after_generation(
+        &self,
+        hosts: &HashSet<String>,
+        after_generation: impl FnOnce(),
+    ) -> Result<()> {
+        self.with_host_lifecycle(|| self.purge_hosts_locked(hosts, after_generation))
     }
 
-    fn purge_hosts_with_after_lifecycle(&self, hosts: &HashSet<String>, after_lifecycle: impl FnOnce()) {
+    fn purge_hosts_with_after_lifecycle(
+        &self,
+        hosts: &HashSet<String>,
+        after_lifecycle: impl FnOnce(),
+    ) -> Result<()> {
         let _lifecycle = self.lifecycle_lock.lock().unwrap();
         after_lifecycle();
-        self.purge_hosts_locked(hosts, || {});
+        self.purge_hosts_locked(hosts, || {})
     }
 
-    fn purge_hosts_locked(&self, hosts: &HashSet<String>, after_generation: impl FnOnce()) {
+    fn purge_hosts_locked(&self, hosts: &HashSet<String>, after_generation: impl FnOnce()) -> Result<()> {
         if hosts.is_empty() {
-            return;
+            return Ok(());
         }
         let _publication = self.publication_lock.lock().unwrap();
         self.publication_generation.fetch_add(1, Ordering::AcqRel);
@@ -585,14 +592,18 @@ impl StatsMgr {
         if let Ok(mut stat_map) = self.stat_map.lock() {
             stat_map.retain(|name, _| !hosts.contains(name));
         }
-        if let Some(runtime_state) = self.runtime_state.lock().ok().and_then(|state| state.clone()) {
+        let runtime_save_result = if let Some(runtime_state) = self.runtime_state.lock().ok().and_then(|state| state.clone()) {
             runtime_state.purge_hosts(hosts);
             match runtime_state.save() {
-                Ok(SaveResult::Published) => {}
-                Ok(SaveResult::Skipped) => warn!("purged runtime state save was superseded by a newer mutation"),
-                Err(err) => warn!("failed to save purged runtime state: {err}"),
+                Ok(SaveResult::Published) => Ok(()),
+                Ok(SaveResult::Skipped) => Err(anyhow::anyhow!(
+                    "purged runtime state save was superseded by a newer mutation"
+                )),
+                Err(err) => Err(err),
             }
-        }
+        } else {
+            Ok(())
+        };
         if let Ok(mut expire_notify_state) = self.expire_notify_state.lock() {
             expire_notify_state.retain(|name, _| !hosts.contains(name));
         }
@@ -609,6 +620,7 @@ impl StatsMgr {
                 *resp_json = public_json;
             }
         }
+        runtime_save_result
     }
 
     pub fn refresh_admin_overrides(&self) {
@@ -1346,7 +1358,7 @@ mod tests {
             ..Default::default()
         }));
 
-        mgr.purge_hosts(&HashSet::from(["srv-gone".into()]));
+        mgr.purge_hosts(&HashSet::from(["srv-gone".into()])).unwrap();
 
         assert!(runtime_state.snapshot().hosts.is_empty());
         assert!(runtime_state.snapshot().alerts.is_empty());
@@ -1393,7 +1405,7 @@ mod tests {
         };
 
         snapshot_ready_rx.recv().unwrap();
-        mgr.purge_hosts(&HashSet::from(["srv-gone".into()]));
+        mgr.purge_hosts(&HashSet::from(["srv-gone".into()])).unwrap();
         publish_tx.send(()).unwrap();
 
         assert!(!publisher.join().unwrap());
@@ -1426,7 +1438,8 @@ mod tests {
             std::thread::spawn(move || {
                 mgr.purge_hosts_with_after_generation(&HashSet::from(["srv-gone".into()]), || {
                     purge_started_tx.send(()).unwrap();
-                });
+                })
+                .unwrap();
                 purge_finished_tx.send(()).unwrap();
             })
         };
@@ -1489,7 +1502,7 @@ mod tests {
             ..Default::default()
         }));
 
-        mgr.purge_hosts(&HashSet::from(["srv-gone".to_string()]));
+        mgr.purge_hosts(&HashSet::from(["srv-gone".to_string()])).unwrap();
 
         assert!(!mgr.hosts_map.lock().unwrap().contains_key("srv-gone"));
         assert!(!mgr.stat_map.lock().unwrap().contains_key("srv-gone"));
@@ -1516,7 +1529,7 @@ mod tests {
             );
         });
 
-        mgr.purge_hosts(&HashSet::from(["srv-return".into()]));
+        mgr.purge_hosts(&HashSet::from(["srv-return".into()])).unwrap();
 
         assert!(!mgr.hosts_map.lock().unwrap().contains_key("srv-return"));
         assert!(!mgr.stat_map.lock().unwrap().contains_key("srv-return"));
@@ -1534,7 +1547,8 @@ mod tests {
                 mgr.purge_hosts_with_after_lifecycle(&HashSet::from(["srv-return".into()]), || {
                     purge_locked_tx.send(()).unwrap();
                     continue_purge_rx.recv().unwrap();
-                });
+                })
+                .unwrap();
                 purge_done_tx.send(()).unwrap();
             })
         };
@@ -1586,7 +1600,7 @@ mod tests {
             .unwrap()
             .insert("srv-return".into(), "2030-01-01".into());
 
-        mgr.purge_hosts(&HashSet::from(["srv-return".into()]));
+        mgr.purge_hosts(&HashSet::from(["srv-return".into()])).unwrap();
 
         let mut state = mgr.expire_notify_state.lock().unwrap();
         assert!(should_emit_expire_notification(
@@ -1594,6 +1608,67 @@ mod tests {
             "srv-return",
             Some("2030-01-01".into()),
         ));
+    }
+
+    #[test]
+    fn purge_transaction_defers_marker_mutation_until_runtime_state_is_durable() {
+        let invalid_parent = std::env::temp_dir().join(format!("ssr-purge-parent-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&invalid_parent, "not a directory").unwrap();
+        let runtime_path = invalid_parent.join("runtime-state.json");
+        let runtime_state = Arc::new(RuntimeStateStore::load(runtime_path.clone()));
+        runtime_state.upsert_host(KnownHost {
+            name: "srv-gone".into(),
+            ..Default::default()
+        });
+
+        let mgr = StatsMgr::new();
+        *mgr.runtime_state.lock().unwrap() = Some(Arc::clone(&runtime_state));
+        mgr.hosts_map.lock().unwrap().insert(
+            "srv-gone".into(),
+            Host {
+                name: "srv-gone".into(),
+                ..Default::default()
+            },
+        );
+        mgr.stat_map.lock().unwrap().insert(
+            "srv-gone".into(),
+            Arc::new(HostStat {
+                name: "srv-gone".into(),
+                ..Default::default()
+            }),
+        );
+        mgr.stats_data.lock().unwrap().servers.push(Arc::new(HostStat {
+            name: "srv-gone".into(),
+            ..Default::default()
+        }));
+
+        let mutation_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = mgr.purge_hosts_transaction(&HashSet::from(["srv-gone".into()]), {
+            let mutation_count = Arc::clone(&mutation_count);
+            move || {
+                mutation_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        });
+
+        assert!(result.is_err());
+        assert_eq!(mutation_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!mgr.hosts_map.lock().unwrap().contains_key("srv-gone"));
+        assert!(!mgr.stat_map.lock().unwrap().contains_key("srv-gone"));
+        assert!(!mgr.get_stats_json().contains("srv-gone"));
+
+        std::fs::remove_file(&invalid_parent).unwrap();
+        mgr.purge_hosts_transaction(&HashSet::from(["srv-gone".into()]), {
+            let mutation_count = Arc::clone(&mutation_count);
+            move || {
+                mutation_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .unwrap();
+
+        assert_eq!(mutation_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::fs::remove_file(&runtime_path).unwrap();
     }
 
     #[test]

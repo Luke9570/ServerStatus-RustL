@@ -397,6 +397,10 @@ fn purge_deleted_hosts(names: Vec<String>) -> Response {
     } else {
         admin::purge_deleted_hosts(&names)
     };
+    purge_deleted_hosts_response(result)
+}
+
+fn purge_deleted_hosts_response(result: anyhow::Result<admin::AdminData>) -> Response {
     match result {
         Ok(data) => Json(json!({
             "code": 0,
@@ -1305,5 +1309,12 @@ mod tests {
         assert_eq!(super::systemd_exec_arg("RN 1"), "\"RN 1\"");
         assert_eq!(super::systemd_exec_arg("50% node"), "\"50%% node\"");
         assert_eq!(super::systemd_exec_arg("quote\"back\\"), "\"quote\\\"back\\\\\"");
+    }
+
+    #[test]
+    fn purge_failure_returns_internal_server_error() {
+        let response = super::purge_deleted_hosts_response(Err(anyhow::anyhow!("runtime-state save failed")));
+
+        assert_eq!(response.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
