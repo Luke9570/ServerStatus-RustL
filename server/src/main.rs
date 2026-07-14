@@ -35,6 +35,7 @@ mod jinja;
 mod jwt;
 mod notifier;
 mod payload;
+mod runtime_state;
 mod stats;
 
 static G_CONFIG: OnceCell<crate::config::Config> = OnceCell::new();
