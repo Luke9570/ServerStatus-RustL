@@ -110,9 +110,15 @@ pub struct RuntimeState {
     pub alerts: HashMap<String, AlertState>,
 }
 
+struct VersionedRuntimeState {
+    generation: u64,
+    state: RuntimeState,
+}
+
 pub struct RuntimeStateStore {
     path: PathBuf,
-    inner: Mutex<RuntimeState>,
+    inner: Mutex<VersionedRuntimeState>,
+    publication_lock: Mutex<()>,
 }
 
 impl RuntimeStateStore {
@@ -138,19 +144,22 @@ impl RuntimeStateStore {
 
         Self {
             path,
-            inner: Mutex::new(state),
+            inner: Mutex::new(VersionedRuntimeState { generation: 0, state }),
+            publication_lock: Mutex::new(()),
         }
     }
 
     pub fn snapshot(&self) -> RuntimeState {
-        self.inner.lock().unwrap().clone()
+        self.inner.lock().unwrap().state.clone()
     }
 
     pub fn upsert_host(&self, host: KnownHost) {
         if host.name.trim().is_empty() {
             return;
         }
-        self.inner.lock().unwrap().hosts.insert(host.name.clone(), host);
+        let mut state = self.inner.lock().unwrap();
+        state.state.hosts.insert(host.name.clone(), host);
+        state.generation = state.generation.wrapping_add(1);
     }
 
     pub fn purge_hosts(&self, hosts: &HashSet<String>) -> bool {
@@ -159,58 +168,91 @@ impl RuntimeStateStore {
         }
 
         let mut state = self.inner.lock().unwrap();
-        let before_hosts = state.hosts.len();
-        let before_alerts = state.alerts.len();
-        state.hosts.retain(|name, _| !hosts.contains(name));
+        let before_hosts = state.state.hosts.len();
+        let before_alerts = state.state.alerts.len();
+        state.state.hosts.retain(|name, _| !hosts.contains(name));
         state
+            .state
             .alerts
             .retain(|key, _| key.split_once(':').is_none_or(|(host, _)| !hosts.contains(host)));
-        state.hosts.len() != before_hosts || state.alerts.len() != before_alerts
+        let changed = state.state.hosts.len() != before_hosts || state.state.alerts.len() != before_alerts;
+        if changed {
+            state.generation = state.generation.wrapping_add(1);
+        }
+        changed
     }
 
     pub fn replace_alerts(&self, alerts: HashMap<String, AlertState>) {
-        self.inner.lock().unwrap().alerts = alerts;
+        let mut state = self.inner.lock().unwrap();
+        if state.state.alerts != alerts {
+            state.state.alerts = alerts;
+            state.generation = state.generation.wrapping_add(1);
+        }
     }
 
     pub fn update_alerts<T>(&self, update: impl FnOnce(&mut HashMap<String, AlertState>) -> T) -> (T, bool) {
         let mut state = self.inner.lock().unwrap();
-        let previous = state.alerts.clone();
-        let result = update(&mut state.alerts);
-        let changed = state.alerts != previous;
+        let previous = state.state.alerts.clone();
+        let result = update(&mut state.state.alerts);
+        let changed = state.state.alerts != previous;
+        if changed {
+            state.generation = state.generation.wrapping_add(1);
+        }
         (result, changed)
     }
 
     pub fn mark_alert_enqueued(&self, key: &str, now: u64) -> bool {
         let mut state = self.inner.lock().unwrap();
-        let Some(alert) = state.alerts.get_mut(key) else {
+        let Some(alert) = state.state.alerts.get_mut(key) else {
             return false;
         };
         if alert.last_enqueued_at == now {
             return false;
         }
         alert.last_enqueued_at = now;
+        state.generation = state.generation.wrapping_add(1);
         true
     }
 
     pub fn prune_alert_states(&self, active_rules: &HashSet<String>, active_hosts: &HashSet<String>) -> bool {
         let mut state = self.inner.lock().unwrap();
-        let before = state.alerts.len();
-        state.alerts.retain(|key, _| {
+        let before = state.state.alerts.len();
+        state.state.alerts.retain(|key, _| {
             key.split_once(':')
                 .is_some_and(|(host, rule)| active_hosts.contains(host) && active_rules.contains(rule))
         });
-        state.alerts.len() != before
+        let changed = state.state.alerts.len() != before;
+        if changed {
+            state.generation = state.generation.wrapping_add(1);
+        }
+        changed
     }
 
     pub fn save(&self) -> Result<()> {
-        let payload = serde_json::to_vec_pretty(&self.snapshot())?;
+        self.save_with_before_publish(|| {})
+    }
+
+    fn save_with_before_publish(&self, before_publish: impl FnOnce()) -> Result<()> {
+        let (payload, generation) = {
+            let state = self.inner.lock().unwrap();
+            (serde_json::to_vec_pretty(&state.state)?, state.generation)
+        };
         if let Some(parent) = self.path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
 
-        let temporary = self.path.with_extension("json.tmp");
+        let temporary = self.path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
         fs::write(&temporary, payload)?;
         File::open(&temporary)?.sync_all()?;
+        before_publish();
+
+        let _publication = self.publication_lock.lock().unwrap();
+        let state = self.inner.lock().unwrap();
+        if state.generation != generation {
+            drop(state);
+            fs::remove_file(&temporary)?;
+            return Ok(());
+        }
         fs::rename(temporary, &self.path)?;
         Ok(())
     }
@@ -365,6 +407,49 @@ mod tests {
         let state = store.snapshot();
         assert!(state.hosts.is_empty());
         assert!(state.alerts.is_empty());
+
+        remove_file_if_present(&path);
+    }
+
+    #[test]
+    fn purge_prevents_stale_runtime_save_from_overwriting_disk() {
+        let path = temporary_path("runtime-save-race.json");
+        let store = std::sync::Arc::new(RuntimeStateStore::load(path.clone()));
+        store.upsert_host(KnownHost {
+            name: "pve".into(),
+            ..Default::default()
+        });
+        store.replace_alerts(HashMap::from([(
+            "pve:offline".into(),
+            AlertState {
+                since: 100,
+                last_enqueued_at: 131,
+            },
+        )]));
+
+        let (snapshot_ready_tx, snapshot_ready_rx) = std::sync::mpsc::channel();
+        let (publish_tx, publish_rx) = std::sync::mpsc::channel();
+        let stale_saver = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || {
+                store
+                    .save_with_before_publish(|| {
+                        snapshot_ready_tx.send(()).unwrap();
+                        publish_rx.recv().unwrap();
+                    })
+                    .unwrap();
+            })
+        };
+
+        snapshot_ready_rx.recv().unwrap();
+        store.purge_hosts(&HashSet::from(["pve".into()]));
+        store.save().unwrap();
+        publish_tx.send(()).unwrap();
+        stale_saver.join().unwrap();
+
+        let restored = RuntimeStateStore::load(path.clone()).snapshot();
+        assert!(restored.hosts.is_empty());
+        assert!(restored.alerts.is_empty());
 
         remove_file_if_present(&path);
     }
