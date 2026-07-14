@@ -20,7 +20,7 @@ use crate::config::{Host, HostGroup};
 use crate::expiry;
 use crate::notifier::{Event, Notifier};
 use crate::payload::{HostStat, StatsResp};
-use crate::runtime_state::{AlertState, KnownHost, RuntimeStateStore};
+use crate::runtime_state::{AlertState, KnownHost, RuntimeStateStore, SaveResult};
 
 const SAVE_INTERVAL: u64 = 60;
 const DEFAULT_GROUP_ID: &str = "default";
@@ -335,7 +335,8 @@ impl StatsMgr {
                             runtime_state.upsert_host(KnownHost::from_stat(&arc_stat));
                             if should_save_runtime_state(is_new_host, latest_runtime_save_ts, arc_stat.latest_ts) {
                                 match runtime_state.save() {
-                                    Ok(()) => latest_runtime_save_ts = arc_stat.latest_ts,
+                                    Ok(SaveResult::Published) => latest_runtime_save_ts = arc_stat.latest_ts,
+                                    Ok(SaveResult::Skipped) => {}
                                     Err(err) => warn!("failed to save runtime state: {err}"),
                                 }
                             }
@@ -363,6 +364,7 @@ impl StatsMgr {
             move || loop {
                 thread::sleep(Duration::from_millis(500));
 
+                let _publication = publication_lock.lock().unwrap();
                 let snapshot_generation = publication_generation.load(Ordering::Acquire);
                 let mut resp = StatsResp::new();
                 let now = resp.updated;
@@ -479,7 +481,11 @@ impl StatsMgr {
                 alert_state_dirty |= alert_state_changed;
                 if alert_state_dirty {
                     match runtime_state.save() {
-                        Ok(()) => alert_state_dirty = false,
+                        Ok(result) => {
+                            if runtime_state_save_clears_alert_dirty(result) {
+                                alert_state_dirty = false;
+                            }
+                        }
                         Err(err) => warn!("failed to save alert runtime state: {err}"),
                     }
                 }
@@ -490,7 +496,6 @@ impl StatsMgr {
                 if publish_snapshot_if_current(
                     snapshot_generation,
                     &publication_generation,
-                    &publication_lock,
                     &resp_json,
                     &stats_data,
                     resp,
@@ -534,21 +539,28 @@ impl StatsMgr {
     }
 
     pub fn purge_hosts(&self, hosts: &HashSet<String>) {
+        self.purge_hosts_with_after_generation(hosts, || {});
+    }
+
+    fn purge_hosts_with_after_generation(&self, hosts: &HashSet<String>, after_generation: impl FnOnce()) {
         if hosts.is_empty() {
             return;
         }
         let _publication = self.publication_lock.lock().unwrap();
         self.publication_generation.fetch_add(1, Ordering::AcqRel);
-        if let Ok(mut stat_map) = self.stat_map.lock() {
-            stat_map.retain(|name, _| !hosts.contains(name));
-        }
+        after_generation();
         if let Ok(mut hosts_map) = self.hosts_map.lock() {
             hosts_map.retain(|name, _| !hosts.contains(name));
         }
+        if let Ok(mut stat_map) = self.stat_map.lock() {
+            stat_map.retain(|name, _| !hosts.contains(name));
+        }
         if let Some(runtime_state) = self.runtime_state.lock().ok().and_then(|state| state.clone()) {
             runtime_state.purge_hosts(hosts);
-            if let Err(err) = runtime_state.save() {
-                warn!("failed to save purged runtime state: {err}");
+            match runtime_state.save() {
+                Ok(SaveResult::Published) => {}
+                Ok(SaveResult::Skipped) => warn!("purged runtime state save was superseded by a newer mutation"),
+                Err(err) => warn!("failed to save purged runtime state: {err}"),
             }
         }
         let public_json = if let Ok(mut stats_data) = self.stats_data.lock() {
@@ -580,7 +592,13 @@ impl StatsMgr {
     }
 
     fn rebuild_cached_response(&self) {
+        self.rebuild_cached_response_with_after_generation(|| {});
+    }
+
+    fn rebuild_cached_response_with_after_generation(&self, after_generation: impl FnOnce()) {
+        let _publication = self.publication_lock.lock().unwrap();
         let snapshot_generation = self.publication_generation.load(Ordering::Acquire);
+        after_generation();
         let deleted_hosts = crate::admin::deleted_hosts();
         let mut resp = StatsResp::new();
         if let Ok(stat_map) = self.stat_map.lock() {
@@ -591,14 +609,21 @@ impl StatsMgr {
                 .collect();
         }
         sort_servers(&mut resp.servers);
-        self.publish_snapshot_if_current(snapshot_generation, resp);
-    }
-
-    fn publish_snapshot_if_current(&self, snapshot_generation: u64, resp: StatsResp) -> bool {
         publish_snapshot_if_current(
             snapshot_generation,
             &self.publication_generation,
-            &self.publication_lock,
+            &self.resp_json,
+            &self.stats_data,
+            resp,
+            false,
+        );
+    }
+
+    fn publish_snapshot_if_current(&self, snapshot_generation: u64, resp: StatsResp) -> bool {
+        let _publication = self.publication_lock.lock().unwrap();
+        publish_snapshot_if_current(
+            snapshot_generation,
+            &self.publication_generation,
             &self.resp_json,
             &self.stats_data,
             resp,
@@ -815,14 +840,12 @@ fn should_save_runtime_state(is_new_host: bool, latest_save_ts: u64, now: u64) -
 fn publish_snapshot_if_current(
     snapshot_generation: u64,
     publication_generation: &AtomicU64,
-    publication_lock: &Mutex<()>,
     resp_json: &Mutex<String>,
     stats_data: &Mutex<StatsResp>,
     resp: StatsResp,
     save_snapshot: bool,
 ) -> bool {
     let public_json = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
-    let _publication = publication_lock.lock().unwrap();
     if publication_generation.load(Ordering::Acquire) != snapshot_generation {
         return false;
     }
@@ -840,6 +863,10 @@ fn publish_snapshot_if_current(
     } else {
         false
     }
+}
+
+fn runtime_state_save_clears_alert_dirty(result: SaveResult) -> bool {
+    result == SaveResult::Published
 }
 
 fn sort_servers(servers: &mut [Arc<HostStat>]) {
@@ -1324,6 +1351,71 @@ mod tests {
         assert!(!publisher.join().unwrap());
         assert!(!mgr.get_stats_json().contains("srv-gone"));
         assert!(mgr.stats_data.lock().unwrap().servers.is_empty());
+    }
+
+    #[test]
+    fn timer_snapshot_waits_for_purge_to_remove_hosts() {
+        let mgr = Arc::new(StatsMgr::new());
+        let stat = Arc::new(HostStat {
+            name: "srv-gone".into(),
+            ..Default::default()
+        });
+        mgr.stat_map.lock().unwrap().insert("srv-gone".into(), Arc::clone(&stat));
+        mgr.hosts_map.lock().unwrap().insert(
+            "srv-gone".into(),
+            Host {
+                name: "srv-gone".into(),
+                ..Default::default()
+            },
+        );
+        mgr.stats_data.lock().unwrap().servers.push(stat);
+
+        let stat_map_guard = mgr.stat_map.lock().unwrap();
+        let (purge_started_tx, purge_started_rx) = std::sync::mpsc::channel();
+        let (purge_finished_tx, purge_finished_rx) = std::sync::mpsc::channel();
+        let purge = {
+            let mgr = Arc::clone(&mgr);
+            std::thread::spawn(move || {
+                mgr.purge_hosts_with_after_generation(&HashSet::from(["srv-gone".into()]), || {
+                    purge_started_tx.send(()).unwrap();
+                });
+                purge_finished_tx.send(()).unwrap();
+            })
+        };
+
+        purge_started_rx.recv().unwrap();
+        let (snapshot_started_tx, snapshot_started_rx) = std::sync::mpsc::channel();
+        let (snapshot_finished_tx, snapshot_finished_rx) = std::sync::mpsc::channel();
+        let snapshot = {
+            let mgr = Arc::clone(&mgr);
+            std::thread::spawn(move || {
+                mgr.rebuild_cached_response_with_after_generation(|| {
+                    snapshot_started_tx.send(()).unwrap();
+                });
+                snapshot_finished_tx.send(()).unwrap();
+            })
+        };
+
+        assert!(snapshot_started_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(stat_map_guard);
+        purge_finished_rx.recv().unwrap();
+        snapshot_started_rx.recv().unwrap();
+        snapshot_finished_rx.recv().unwrap();
+        purge.join().unwrap();
+        snapshot.join().unwrap();
+
+        assert!(!mgr.get_stats_json().contains("srv-gone"));
+        assert!(mgr.stats_data.lock().unwrap().servers.is_empty());
+    }
+
+    #[test]
+    fn skipped_runtime_save_keeps_alert_state_dirty() {
+        assert!(!runtime_state_save_clears_alert_dirty(
+            crate::runtime_state::SaveResult::Skipped
+        ));
+        assert!(runtime_state_save_clears_alert_dirty(
+            crate::runtime_state::SaveResult::Published
+        ));
     }
 
     #[test]

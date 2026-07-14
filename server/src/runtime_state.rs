@@ -110,6 +110,12 @@ pub struct RuntimeState {
     pub alerts: HashMap<String, AlertState>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveResult {
+    Published,
+    Skipped,
+}
+
 struct VersionedRuntimeState {
     generation: u64,
     state: RuntimeState,
@@ -228,11 +234,11 @@ impl RuntimeStateStore {
         changed
     }
 
-    pub fn save(&self) -> Result<()> {
+    pub fn save(&self) -> Result<SaveResult> {
         self.save_with_before_publish(|| {})
     }
 
-    fn save_with_before_publish(&self, before_publish: impl FnOnce()) -> Result<()> {
+    fn save_with_before_publish(&self, before_publish: impl FnOnce()) -> Result<SaveResult> {
         let (payload, generation) = {
             let state = self.inner.lock().unwrap();
             (serde_json::to_vec_pretty(&state.state)?, state.generation)
@@ -251,10 +257,10 @@ impl RuntimeStateStore {
         if state.generation != generation {
             drop(state);
             fs::remove_file(&temporary)?;
-            return Ok(());
+            return Ok(SaveResult::Skipped);
         }
         fs::rename(temporary, &self.path)?;
-        Ok(())
+        Ok(SaveResult::Published)
     }
 }
 
@@ -312,7 +318,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use super::{import_legacy_stats, AlertState, KnownHost, RuntimeStateStore};
+    use super::{import_legacy_stats, AlertState, KnownHost, RuntimeStateStore, SaveResult};
     use crate::payload::HostStat;
 
     fn temporary_path(name: &str) -> PathBuf {
@@ -437,7 +443,7 @@ mod tests {
                         snapshot_ready_tx.send(()).unwrap();
                         publish_rx.recv().unwrap();
                     })
-                    .unwrap();
+                    .unwrap()
             })
         };
 
@@ -445,7 +451,7 @@ mod tests {
         store.purge_hosts(&HashSet::from(["pve".into()]));
         store.save().unwrap();
         publish_tx.send(()).unwrap();
-        stale_saver.join().unwrap();
+        assert_eq!(stale_saver.join().unwrap(), SaveResult::Skipped);
 
         let restored = RuntimeStateStore::load(path.clone()).snapshot();
         assert!(restored.hosts.is_empty());
