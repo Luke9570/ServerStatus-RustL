@@ -269,16 +269,16 @@ pub(crate) async fn test(config: &crate::admin::EffectiveWebhookConfig) -> Notif
 async fn test_legacy(config: &Config) -> NotificationTestResult {
     validate_legacy_test_config(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
     let http_client = reqwest::Client::new();
-    let mut succeeded = 0_usize;
+    let mut delivery_failed = false;
     for receiver in config.receiver.iter().filter(|receiver| receiver.enabled) {
         if deliver_legacy_receiver(&http_client, receiver, "❗ServerStatus test msg".to_string())
             .await
-            .is_ok()
+            .is_err()
         {
-            succeeded += 1;
+            delivery_failed = true;
         }
     }
-    if succeeded == 0 {
+    if delivery_failed {
         Err(NotificationTestError::DeliveryFailed)
     } else {
         Ok(())
@@ -299,13 +299,16 @@ async fn test_structured(config: &crate::admin::StructuredWebhookOverride) -> No
     }
 
     let http_client = reqwest::Client::new();
-    let mut succeeded = 0_usize;
+    let mut delivery_failed = false;
     for (receiver, content) in deliveries {
-        if deliver_structured_receiver(&http_client, receiver, content).await.is_ok() {
-            succeeded += 1;
+        if deliver_structured_receiver(&http_client, receiver, content)
+            .await
+            .is_err()
+        {
+            delivery_failed = true;
         }
     }
-    if succeeded == 0 {
+    if delivery_failed {
         Err(NotificationTestError::DeliveryFailed)
     } else {
         Ok(())
@@ -570,6 +573,32 @@ mod tests {
         format!("http://{address}/sentinel-timeout-secret")
     }
 
+    async fn successful_test_endpoint(deliveries: Arc<AtomicUsize>) -> String {
+        async fn accepted(State(deliveries): State<Arc<AtomicUsize>>) -> StatusCode {
+            deliveries.fetch_add(1, Ordering::SeqCst);
+            StatusCode::NO_CONTENT
+        }
+
+        let app = Router::new().route("/hook", post(accepted)).with_state(deliveries);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}/hook")
+    }
+
+    async fn failed_test_endpoint() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        format!("http://{address}/hook")
+    }
+
     #[test]
     fn disabled_invalid_legacy_receiver_does_not_panic_during_construction() {
         let config = Box::leak(Box::new(Config {
@@ -662,6 +691,68 @@ mod tests {
         );
 
         assert_eq!(detail, "[redacted] Authorization: [redacted]");
+    }
+
+    #[tokio::test]
+    async fn legacy_test_reports_delivery_failed_after_a_sibling_succeeds() {
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let config = Config {
+            enabled: true,
+            receiver: vec![
+                Receiver {
+                    enabled: true,
+                    url: failed_test_endpoint().await,
+                    timeout: 1,
+                    script: "[true, \"test\"]".into(),
+                    ..Default::default()
+                },
+                Receiver {
+                    enabled: true,
+                    url: successful_test_endpoint(Arc::clone(&deliveries)).await,
+                    timeout: 1,
+                    script: "[true, \"test\"]".into(),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let result = test_legacy(&config).await;
+
+        assert_eq!(result, Err(NotificationTestError::DeliveryFailed));
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn structured_test_reports_delivery_failed_after_a_sibling_succeeds() {
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let config = crate::admin::StructuredWebhookOverride {
+            enabled: true,
+            receivers: vec![
+                crate::admin::StructuredWebhookReceiver {
+                    id: "failure".into(),
+                    name: "Failure receiver".into(),
+                    enabled: true,
+                    url: failed_test_endpoint().await,
+                    timeout: 1,
+                    body_tpl: "test".into(),
+                    ..Default::default()
+                },
+                crate::admin::StructuredWebhookReceiver {
+                    id: "success".into(),
+                    name: "Success receiver".into(),
+                    enabled: true,
+                    url: successful_test_endpoint(Arc::clone(&deliveries)).await,
+                    timeout: 1,
+                    body_tpl: "test".into(),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let result = test_structured(&config).await;
+
+        assert_eq!(result, Err(NotificationTestError::DeliveryFailed));
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
     }
 
     #[test]

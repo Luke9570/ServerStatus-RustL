@@ -205,6 +205,14 @@ fn validate_test_config(config: &Config) -> Result<()> {
     if !config.is_ready() {
         return Err(anyhow!("Bark notifier is not ready"));
     }
+    let mut normalized = config.clone();
+    if let Some((server, device_key)) = split_server_and_device_key(&normalized.server) {
+        normalized.server = server;
+        if normalized.device_key.trim().is_empty() {
+            normalized.device_key = device_key;
+        }
+    }
+    validate_bark_server_url(&normalized.server)?;
     let stat = HostStat::default();
     for event in [
         Event::NodeUp,
@@ -214,6 +222,20 @@ fn validate_test_config(config: &Config) -> Result<()> {
         Event::Health,
     ] {
         render_content(config, &event, &stat)?;
+    }
+    Ok(())
+}
+
+fn validate_bark_server_url(server: &str) -> Result<()> {
+    let url = reqwest::Url::parse(server.trim()).map_err(|_| anyhow!("invalid Bark server URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(anyhow!("invalid Bark server URL"));
     }
     Ok(())
 }

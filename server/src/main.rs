@@ -293,7 +293,7 @@ mod tests {
     #[tokio::test]
     async fn notification_test_routes_require_admin_auth() {
         init_test_config();
-        for kind in ["tgbot", "bark", "wechat", "email", "webhook", "log"] {
+        for kind in ["tgbot", "telegram", "tg", "bark", "wechat", "email", "webhook", "log"] {
             let response = create_app_router()
                 .oneshot(notification_test_request(kind, json!({}), None))
                 .await
@@ -306,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn notification_test_routes_reject_invalid_admin_tokens() {
         init_test_config();
-        for kind in ["tgbot", "bark", "wechat", "email", "webhook", "log"] {
+        for kind in ["tgbot", "telegram", "tg", "bark", "wechat", "email", "webhook", "log"] {
             let response = create_app_router()
                 .oneshot(notification_test_request(kind, json!({}), Some("invalid-admin-token")))
                 .await
@@ -319,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn notification_test_routes_dispatch_all_supported_kinds() {
         let token = admin_token();
-        for kind in ["tgbot", "bark", "wechat", "email", "webhook", "log"] {
+        for kind in ["tgbot", "telegram", "tg", "bark", "wechat", "email", "webhook", "log"] {
             let response = create_app_router()
                 .oneshot(notification_test_request(kind, json!({}), Some(&token)))
                 .await
@@ -380,6 +380,32 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(!body.contains("sentinel-provider-body-secret"));
+        assert!(!body.contains("sentinel-device-key"));
+    }
+
+    #[tokio::test]
+    async fn invalid_bark_server_is_bad_request_and_redacted() {
+        let token = admin_token();
+        let response = create_app_router()
+            .oneshot(notification_test_request(
+                "bark",
+                json!({
+                    "bark": {
+                        "enabled": true,
+                        "server": "ftp://sentinel-bark-server-secret/endpoint",
+                        "device_key": "sentinel-device-key",
+                        "timeout": 1
+                    }
+                }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body.contains("sentinel-bark-server-secret"));
         assert!(!body.contains("sentinel-device-key"));
     }
 
