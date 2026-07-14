@@ -81,43 +81,97 @@ impl Webhook {
 
         o
     }
-    fn call_webhook(&self, r: &'static Receiver, content: String) -> Result<()> {
+    fn call_webhook(&self, receiver: &Receiver, content: String) -> Result<()> {
         if content.is_empty() {
             return Ok(());
         }
 
+        let http_client = self.http_client.clone();
+        let mut request = http_client
+            .post(&receiver.url)
+            .timeout(Duration::from_secs(receiver.timeout.into()))
+            .body(reqwest::Body::from(content.into_bytes()));
+
+        for (name, value) in &receiver.headers {
+            request = request.header(name, value);
+        }
+
+        if let (Some(user), Some(password)) = (receiver.username.as_ref(), receiver.password.as_ref()) {
+            if !user.is_empty() && !password.is_empty() {
+                request = request.basic_auth(user, Some(password));
+            }
+        }
+        let request = request
+            .build()
+            .map_err(|_| anyhow::anyhow!("invalid legacy webhook request"))?;
         let handle = NOTIFIER_HANDLE
             .lock()
             .map_err(|_| anyhow::anyhow!("notification runtime lock is unavailable"))?
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("notification runtime is unavailable"))?;
-        let http_client = self.http_client.clone();
         handle.spawn(async move {
-            let mut http_client_builder = http_client
-                .post(&r.url)
-                .timeout(Duration::from_secs(r.timeout.into()))
-                .body(reqwest::Body::from(content.into_bytes()));
-
-            for (k, v) in &r.headers {
-                http_client_builder = http_client_builder.header(k, v);
-            }
-
-            if let (Some(user), Some(pass)) = (r.username.as_ref(), r.password.as_ref()) {
-                if !user.is_empty() && !pass.is_empty() {
-                    http_client_builder = http_client_builder.basic_auth(user, Some(pass));
-                }
-            }
-
-            //
-            match http_client_builder.send().await {
+            match http_client.execute(request).await {
                 Ok(resp) => info!("webhook send message status => {}", resp.status()),
                 Err(_) => error!("webhook send message failed"),
             }
         });
         Ok(())
     }
+
+    fn execute_receivers<F>(&self, event: &Event, stat: &HostStat, mut deliver: F) -> Result<()>
+    where
+        F: FnMut(&Receiver, String) -> Result<()>,
+    {
+        let mut attempted = 0_usize;
+        let mut succeeded = 0_usize;
+
+        for (idx, receiver) in self.config.receiver.iter().enumerate() {
+            if !receiver.enabled {
+                continue;
+            }
+            let Some(ast) = self.ast_list.get(idx).and_then(Option::as_ref) else {
+                continue;
+            };
+            attempted += 1;
+
+            let result = (|| -> Result<()> {
+                let mut scope = Scope::new();
+                scope.push("event", get_tag(event));
+                scope.push("host", to_dynamic(stat)?);
+                scope.push("config", to_dynamic(receiver)?);
+                scope.push("ip_info", to_dynamic(stat.ip_info.as_ref())?);
+                scope.push("sys_info", to_dynamic(stat.sys_info.as_ref())?);
+
+                let value: Dynamic = self.engine.eval_ast_with_scope(&mut scope, ast)?;
+                if let Ok(parts) = from_dynamic::<Array>(&value) {
+                    if parts.len() >= 2 && from_dynamic::<bool>(&parts[0]).unwrap_or_default() {
+                        let content = serde_json::to_string(&parts[1])
+                            .map_err(|_| anyhow::anyhow!("invalid legacy webhook payload"))?;
+                        deliver(receiver, content)?;
+                    }
+                }
+                Ok(())
+            })();
+
+            match result {
+                Ok(()) => succeeded += 1,
+                Err(error) => error!("{}", legacy_receiver_failure_context(idx, &error)),
+            }
+        }
+
+        if attempted > 0 && succeeded == 0 {
+            Err(anyhow::anyhow!("legacy webhook notification failed"))
+        } else {
+            Ok(())
+        }
+    }
 }
+
+fn legacy_receiver_failure_context(index: usize, _error: &anyhow::Error) -> String {
+    format!("legacy webhook receiver failed: index={index}, error=notification failed")
+}
+
 impl crate::notifier::Notifier for Webhook {
     fn kind(&self) -> &'static str {
         KIND
@@ -128,6 +182,8 @@ impl crate::notifier::Notifier for Webhook {
     }
 
     fn notify_test(&self) -> Result<()> {
+        let mut attempted = 0_usize;
+        let mut succeeded = 0_usize;
         for (idx, receiver) in self.config.receiver.iter().enumerate() {
             if !receiver.enabled
                 || self
@@ -138,38 +194,22 @@ impl crate::notifier::Notifier for Webhook {
             {
                 continue;
             }
-            self.call_webhook(receiver, "❗ServerStatus test msg".into())?;
+            attempted += 1;
+            match self.call_webhook(receiver, "❗ServerStatus test msg".into()) {
+                Ok(()) => succeeded += 1,
+                Err(error) => error!("{}", legacy_receiver_failure_context(idx, &error)),
+            }
+        }
+        if attempted > 0 && succeeded == 0 {
+            return Err(anyhow::anyhow!("legacy webhook notification failed"));
         }
         Ok(())
     }
 
     fn notify(&self, e: &Event, stat: &HostStat) -> Result<()> {
-        for (idx, r) in self.config.receiver.iter().enumerate() {
-            if !r.enabled {
-                continue;
-            }
-
-            let mut scope = Scope::new();
-            scope.push("event", get_tag(e));
-            scope.push("host", to_dynamic(stat)?);
-            scope.push("config", to_dynamic(r)?);
-            scope.push("ip_info", to_dynamic(stat.ip_info.as_ref())?);
-            scope.push("sys_info", to_dynamic(stat.sys_info.as_ref())?);
-
-            let Some(ast) = self.ast_list.get(idx).and_then(Option::as_ref) else {
-                continue;
-            };
-            let res: Dynamic = self.engine.eval_ast_with_scope(&mut scope, ast)?;
-
-            // [notify, json_body/content]
-            if let Ok(v) = from_dynamic::<Array>(&res) {
-                if v.len() >= 2 && from_dynamic::<bool>(&v[0]).unwrap_or_default() {
-                    self.call_webhook(r, serde_json::to_string(&v[1]).unwrap_or_default())?;
-                }
-            }
-        }
-
-        Ok(())
+        self.execute_receivers(e, stat, |receiver, content| {
+            self.call_webhook(receiver, content)
+        })
     }
 }
 
@@ -225,5 +265,51 @@ mod tests {
             &HostStat::default(),
         )
         .is_ok());
+    }
+
+    #[test]
+    fn runtime_error_in_one_receiver_does_not_stop_valid_sibling() {
+        let config = Box::leak(Box::new(Config {
+            enabled: true,
+            receiver: vec![
+                Receiver {
+                    enabled: true,
+                    username: Some("user".into()),
+                    password: Some("sentinel-webhook-secret".into()),
+                    script: "throw \"sentinel-script-secret\";".into(),
+                    ..Default::default()
+                },
+                Receiver {
+                    enabled: true,
+                    script: "[true, \"recorded\"]".into(),
+                    ..Default::default()
+                },
+            ],
+        }));
+        let notifier = Webhook::new(config);
+        let mut deliveries = Vec::new();
+
+        let result = notifier.execute_receivers(
+            &Event::NodeDown,
+            &HostStat::default(),
+            |_receiver, content| {
+                deliveries.push(content);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(deliveries.len(), 1);
+        assert!(deliveries[0].contains("recorded"));
+        let context = legacy_receiver_failure_context(
+            0,
+            &anyhow::anyhow!("sentinel-script-secret"),
+        );
+        assert_eq!(
+            context,
+            "legacy webhook receiver failed: index=0, error=notification failed"
+        );
+        assert!(!context.contains("sentinel-script-secret"));
+        assert!(!context.contains("sentinel-webhook-secret"));
     }
 }

@@ -129,18 +129,7 @@ impl Bark {
         if !config.enabled {
             return Ok(());
         }
-        if !config.is_ready() {
-            return Err(anyhow!("Bark notifier is not ready"));
-        }
-
-        let server = config.server.trim_end_matches('/');
-        let push_url = if server.ends_with("/push") {
-            server.to_string()
-        } else {
-            format!("{server}/push")
-        };
-        let timeout = config.timeout.max(1);
-        let payload = Self::payload(config, body);
+        let (push_url, payload, timeout) = prepare_delivery(config, body)?;
         let handle = NOTIFIER_HANDLE
             .lock()
             .map_err(|_| anyhow!("notification runtime lock is unavailable"))?
@@ -196,6 +185,45 @@ impl crate::notifier::Notifier for Bark {
         let config = crate::admin::effective_bark_config(self.config);
         self.send_with_config(&config, "❗ServerStatus test msg".to_string())
     }
+}
+
+fn prepare_delivery(config: &Config, body: String) -> Result<(String, HashMap<String, String>, u64)> {
+    let mut normalized = config.clone();
+    if let Some((server, device_key)) = split_server_and_device_key(&normalized.server) {
+        normalized.server = server;
+        if normalized.device_key.trim().is_empty() {
+            normalized.device_key = device_key;
+        }
+    }
+    if !normalized.is_ready() || normalized.device_key.trim().is_empty() {
+        return Err(anyhow!("Bark notifier is not ready"));
+    }
+
+    let server = normalized.server.trim_end_matches('/');
+    let endpoint = if server.ends_with("/push") {
+        server.to_string()
+    } else {
+        format!("{server}/push")
+    };
+    let payload = Bark::payload(&normalized, body);
+    Ok((endpoint, payload, normalized.timeout.max(1)))
+}
+
+fn split_server_and_device_key(input: &str) -> Option<(String, String)> {
+    let value = input.trim().trim_end_matches('/');
+    let (scheme, rest) = value
+        .strip_prefix("https://")
+        .map(|rest| ("https", rest))
+        .or_else(|| value.strip_prefix("http://").map(|rest| ("http", rest)))?;
+    let (authority, path) = rest.split_once('/')?;
+    let device_key = path.split('/').find(|part| !part.trim().is_empty())?.trim();
+    if device_key.eq_ignore_ascii_case("push") {
+        return None;
+    }
+    if !authority.eq_ignore_ascii_case("api.day.app") && device_key.chars().count() < 12 {
+        return None;
+    }
+    Some((format!("{scheme}://{authority}"), device_key.to_string()))
 }
 
 fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<String> {
@@ -288,5 +316,35 @@ mod tests {
         ] {
             assert_eq!(render_content(&config, &event, &stat).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn full_bark_api_url_is_normalized_for_delivery() {
+        let config = Config {
+            enabled: true,
+            server: "https://api.day.app/abcdefghijklmnopqrstuv".into(),
+            device_key: String::new(),
+            ..Default::default()
+        };
+
+        let (endpoint, payload, _) = prepare_delivery(&config, "body".into()).unwrap();
+
+        assert_eq!(endpoint, "https://api.day.app/push");
+        assert_eq!(payload.get("device_key").map(String::as_str), Some("abcdefghijklmnopqrstuv"));
+    }
+
+    #[test]
+    fn separate_bark_server_and_device_key_are_preserved_for_delivery() {
+        let config = Config {
+            enabled: true,
+            server: "https://bark.example".into(),
+            device_key: "separate-device-key".into(),
+            ..Default::default()
+        };
+
+        let (endpoint, payload, _) = prepare_delivery(&config, "body".into()).unwrap();
+
+        assert_eq!(endpoint, "https://bark.example/push");
+        assert_eq!(payload.get("device_key").map(String::as_str), Some("separate-device-key"));
     }
 }
