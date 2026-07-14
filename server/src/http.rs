@@ -6,7 +6,6 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use log::warn;
 use minijinja::context;
 use prettytable::Table;
 use prost::Message;
@@ -14,9 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::error::Error as _;
 use std::fmt::Write as _;
-use tokio::time::Duration;
 
 use stat_common::{server_status::StatRequest, utils::bytes2human};
 
@@ -69,6 +66,10 @@ pub async fn admin_settings(_claims: jwt::Claims) -> Json<Value> {
 }
 
 pub async fn save_admin_settings(_claims: jwt::Claims, Json(payload): Json<admin::AdminData>) -> impl IntoResponse {
+    if admin::validate_replacement(&payload).is_err() {
+        return json_error(StatusCode::BAD_REQUEST, "settings validation failed");
+    }
+
     match admin::replace(payload) {
         Ok(_) => {
             if let Some(mgr) = G_STATS_MGR.get() {
@@ -81,22 +82,7 @@ pub async fn save_admin_settings(_claims: jwt::Claims, Json(payload): Json<admin
             }))
             .into_response()
         }
-        Err(err) => {
-            let message = err.to_string();
-            let status = if message.starts_with("后台入口路径") {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (
-                status,
-                Json(json!({
-                    "code": 1,
-                    "message": message,
-                })),
-            )
-        }
-        .into_response(),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "settings could not be saved"),
     }
 }
 
@@ -106,6 +92,14 @@ pub struct NotifyTestPayload {
     tgbot: Option<admin::TgbotOverride>,
     #[serde(default)]
     bark: Option<admin::BarkOverride>,
+    #[serde(default)]
+    wechat: Option<admin::WechatOverride>,
+    #[serde(default)]
+    email: Option<admin::EmailOverride>,
+    #[serde(default)]
+    webhook: Option<admin::StructuredWebhookOverride>,
+    #[serde(default)]
+    log: Option<admin::LogOverride>,
 }
 
 pub async fn test_admin_notification(
@@ -114,10 +108,10 @@ pub async fn test_admin_notification(
     Json(payload): Json<NotifyTestPayload>,
 ) -> impl IntoResponse {
     let cfg = G_CONFIG.get().unwrap();
-    match kind.as_str() {
+    let result = match kind.as_str() {
         "tgbot" | "telegram" | "tg" => {
-            let mut config = admin::effective_tgbot_config(&cfg.tgbot);
             if let Some(mut override_data) = payload.tgbot {
+                let mut config = admin::effective_tgbot_config(&cfg.tgbot);
                 admin::normalize_tgbot_override(&mut override_data);
                 config.enabled = override_data.enabled;
                 if override_data.clear_bot_token {
@@ -133,12 +127,14 @@ pub async fn test_admin_notification(
                 override_nonempty_string(&mut config.title, override_data.title);
                 override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
                 override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
+                crate::notifier::tgbot::test(&config).await
+            } else {
+                crate::notifier::test_effective_notification("tgbot", cfg).await
             }
-            send_tgbot_test(config).await
         }
         "bark" => {
-            let mut config = admin::effective_bark_config(&cfg.bark);
             if let Some(mut override_data) = payload.bark {
+                let mut config = admin::effective_bark_config(&cfg.bark);
                 admin::normalize_bark_override(&mut override_data);
                 config.enabled = override_data.enabled;
                 override_nonempty_string(&mut config.server, override_data.server);
@@ -157,10 +153,98 @@ pub async fn test_admin_notification(
                 if let Some(timeout) = override_data.timeout {
                     config.timeout = timeout;
                 }
+                crate::notifier::bark::test(&config).await
+            } else {
+                crate::notifier::test_effective_notification("bark", cfg).await
             }
-            send_bark_test(config).await
         }
-        _ => json_error(StatusCode::NOT_FOUND, "不支持的通知方式"),
+        "wechat" => {
+            if let Some(mut override_data) = payload.wechat {
+                let mut config = admin::effective_wechat_config(&cfg.wechat);
+                admin::normalize_wechat_override(&mut override_data);
+                config.enabled = override_data.enabled;
+                override_nonempty_string(&mut config.corp_id, override_data.corp_id);
+                if override_data.clear_corp_secret {
+                    config.corp_secret.clear();
+                } else {
+                    override_nonempty_string(&mut config.corp_secret, override_data.corp_secret);
+                }
+                override_nonempty_string(&mut config.agent_id, override_data.agent_id);
+                override_nonempty_string(&mut config.title, override_data.title);
+                override_nonempty_string(&mut config.online_tpl, override_data.online_tpl);
+                override_nonempty_string(&mut config.offline_tpl, override_data.offline_tpl);
+                override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
+                override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
+                crate::notifier::wechat::test(&config).await
+            } else {
+                crate::notifier::test_effective_notification("wechat", cfg).await
+            }
+        }
+        "email" => {
+            if let Some(mut override_data) = payload.email {
+                let mut config = admin::effective_email_config(&cfg.email);
+                admin::normalize_email_override(&mut override_data);
+                config.enabled = override_data.enabled;
+                override_nonempty_string(&mut config.server, override_data.server);
+                override_nonempty_string(&mut config.username, override_data.username);
+                if override_data.clear_password {
+                    config.password.clear();
+                } else {
+                    override_nonempty_string(&mut config.password, override_data.password);
+                }
+                override_nonempty_string(&mut config.to, override_data.to);
+                override_nonempty_string(&mut config.subject, override_data.subject);
+                override_nonempty_string(&mut config.title, override_data.title);
+                override_nonempty_string(&mut config.online_tpl, override_data.online_tpl);
+                override_nonempty_string(&mut config.offline_tpl, override_data.offline_tpl);
+                override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
+                override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
+                crate::notifier::email::test(&config).await
+            } else {
+                crate::notifier::test_effective_notification("email", cfg).await
+            }
+        }
+        "webhook" => {
+            if let Some(mut override_data) = payload.webhook {
+                let mut override_config = match admin::effective_webhook_override(&cfg.webhook) {
+                    admin::EffectiveWebhookConfig::Structured(config) => config,
+                    admin::EffectiveWebhookConfig::Legacy(_) => admin::StructuredWebhookOverride::default(),
+                };
+                admin::normalize_webhook_override(&mut override_data);
+                admin::merge_webhook_secrets(&mut override_data, &override_config);
+                override_config.enabled = override_data.enabled;
+                if !override_data.receivers.is_empty() {
+                    override_config.receivers = override_data.receivers;
+                }
+                crate::notifier::webhook::test(&admin::EffectiveWebhookConfig::Structured(override_config)).await
+            } else {
+                crate::notifier::test_effective_notification("webhook", cfg).await
+            }
+        }
+        "log" => {
+            if let Some(override_data) = payload.log {
+                let mut config = admin::effective_log_config(&cfg.log);
+                config.enabled = override_data.enabled;
+                override_nonempty_string(&mut config.tpl, override_data.tpl);
+                crate::notifier::log::test(&config).await
+            } else {
+                crate::notifier::test_effective_notification("log", cfg).await
+            }
+        }
+        _ => return json_error(StatusCode::NOT_FOUND, "notification type is unsupported"),
+    };
+
+    match result {
+        Ok(()) => notify_test_ok(),
+        Err(crate::notifier::NotificationTestError::UnsupportedKind) => {
+            json_error(StatusCode::NOT_FOUND, "notification type is unsupported")
+        }
+        Err(crate::notifier::NotificationTestError::InvalidConfiguration) => {
+            json_error(StatusCode::BAD_REQUEST, "notification configuration is invalid")
+        }
+        Err(crate::notifier::NotificationTestError::DeliveryFailed) => {
+            json_error(StatusCode::BAD_GATEWAY, "notification delivery failed")
+        }
     }
 }
 
@@ -170,199 +254,10 @@ fn override_nonempty_string(target: &mut String, value: String) {
     }
 }
 
-async fn send_tgbot_test(config: crate::notifier::tgbot::Config) -> Response {
-    if !config.enabled {
-        return json_error(StatusCode::BAD_REQUEST, "请先启用 Telegram");
-    }
-    if config.bot_token.trim().is_empty() || config.chat_id.trim().is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, "Telegram Bot Token 和 Chat ID 不能为空");
-    }
-
-    let token = config.bot_token.trim().to_string();
-    let tg_url = format!("https://api.telegram.org/bot{token}/sendMessage");
-    let mut data = HashMap::new();
-    data.insert("chat_id", config.chat_id);
-    data.insert(
-        "text",
-        format!(
-            "{}\nServerStatus 后台通知测试已发送",
-            if config.title.trim().is_empty() {
-                "ServerStatus"
-            } else {
-                config.title.trim()
-            }
-        ),
-    );
-
-    match reqwest::Client::new()
-        .post(tg_url)
-        .timeout(Duration::from_secs(10))
-        .json(&data)
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => notify_test_ok("Telegram"),
-        Ok(resp) => json_error(StatusCode::BAD_GATEWAY, &format!("Telegram 接口返回 {}", resp.status())),
-        Err(err) => {
-            let detail = request_error_detail(&err).replace(&token, "[redacted]");
-            json_error(StatusCode::BAD_GATEWAY, &format!("Telegram 测试失败: {detail}"))
-        }
-    }
-}
-
-async fn send_bark_test(config: crate::notifier::bark::Config) -> Response {
-    if !config.enabled {
-        return json_error(StatusCode::BAD_REQUEST, "请先启用 Bark");
-    }
-    if config.device_key.trim().is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, "Bark Device Key 不能为空");
-    }
-
-    let server = config.server.trim_end_matches('/');
-    let push_url = if server.ends_with("/push") {
-        server.to_string()
-    } else {
-        format!("{server}/push")
-    };
-    let device_key = config.device_key.trim().to_string();
-    let mut data = HashMap::new();
-    data.insert("device_key".to_string(), device_key.clone());
-    data.insert(
-        "title".to_string(),
-        if config.title.trim().is_empty() {
-            "ServerStatus".to_string()
-        } else {
-            config.title
-        },
-    );
-    data.insert("body".to_string(), "ServerStatus 后台通知测试已发送".to_string());
-    for (key, value) in [
-        ("group", config.group),
-        ("icon", config.icon),
-        ("sound", config.sound),
-        ("url", config.url),
-    ] {
-        if !value.trim().is_empty() {
-            data.insert(key.to_string(), value);
-        }
-    }
-
-    match reqwest::Client::new()
-        .post(push_url)
-        .timeout(Duration::from_secs(config.timeout.max(1)))
-        .json(&data)
-        .send()
-        .await
-    {
-        Ok(resp) => bark_test_response(resp, &device_key).await,
-        Err(err) => {
-            let detail = request_error_detail(&err);
-            warn!("bark test request failed: {detail}");
-            json_error(StatusCode::BAD_GATEWAY, &format!("Bark 测试失败: {detail}"))
-        }
-    }
-}
-
-fn request_error_detail(err: &reqwest::Error) -> String {
-    let mut parts = vec![err.to_string()];
-    let mut source = err.source();
-    while let Some(err) = source {
-        let detail = err.to_string();
-        if !parts.iter().any(|part| part == &detail) {
-            parts.push(detail);
-        }
-        source = err.source();
-    }
-    parts.join(": ")
-}
-
-async fn bark_test_response(resp: reqwest::Response, device_key: &str) -> Response {
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        let detail = sanitize_bark_detail(&short_response_body(&body), device_key);
-        warn!(
-            "bark test returned unsuccessful status: {status}, detail: {}",
-            if detail.is_empty() { "-" } else { &detail }
-        );
-        return if detail.is_empty() {
-            json_error(StatusCode::BAD_GATEWAY, &format!("Bark 接口返回 {status}"))
-        } else {
-            json_error(StatusCode::BAD_GATEWAY, &format!("Bark 接口返回 {status}: {detail}"))
-        };
-    }
-
-    let body = body.trim();
-    if body.is_empty() {
-        return notify_test_ok("Bark");
-    }
-
-    let Ok(payload) = serde_json::from_str::<Value>(body) else {
-        return notify_test_ok("Bark");
-    };
-    let Some(code) = payload.get("code") else {
-        return notify_test_ok("Bark");
-    };
-    if bark_success_code(code) {
-        let detail = payload
-            .get("message")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| sanitize_bark_detail(value, device_key));
-        let message = detail
-            .as_deref()
-            .map_or("Bark API 已接受测试请求，请检查手机通知", |message| {
-                if message.eq_ignore_ascii_case("success") {
-                    "Bark API 返回 success，测试请求已发送，请检查手机通知"
-                } else {
-                    message
-                }
-            });
-        return notify_test_ok_with_message(message);
-    }
-
-    let message = payload
-        .get("message")
-        .or_else(|| payload.get("error"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map_or_else(|| short_response_body(body), ToString::to_string);
-    let message = sanitize_bark_detail(&message, device_key);
-    warn!("bark test returned failure payload: {message}");
-    json_error(StatusCode::BAD_GATEWAY, &format!("Bark 推送失败: {message}"))
-}
-
-fn bark_success_code(code: &Value) -> bool {
-    code.as_i64().is_some_and(|value| value == 0 || value == 200)
-        || code.as_str().is_some_and(|value| value == "0" || value == "200")
-}
-
-fn short_response_body(body: &str) -> String {
-    let body = body.trim();
-    if body.chars().count() <= 180 {
-        body.to_string()
-    } else {
-        format!("{}...", body.chars().take(180).collect::<String>())
-    }
-}
-
-fn sanitize_bark_detail(detail: &str, device_key: &str) -> String {
-    let device_key = device_key.trim();
-    if device_key.is_empty() {
-        detail.to_string()
-    } else {
-        detail.replace(device_key, "[redacted]")
-    }
-}
-
-fn notify_test_ok(kind: &str) -> Response {
-    notify_test_ok_with_message(&format!("{kind} test sent"))
-}
-
-fn notify_test_ok_with_message(message: &str) -> Response {
+fn notify_test_ok() -> Response {
     Json(json!({
         "code": 0,
-        "message": message,
+        "message": "notification test sent",
     }))
     .into_response()
 }

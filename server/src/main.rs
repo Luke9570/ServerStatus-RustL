@@ -234,6 +234,222 @@ async fn main() -> Result<(), anyhow::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        extract::State,
+        http::{Request, StatusCode},
+        routing::post,
+        Json, Router,
+    };
+    use jsonwebtoken::{encode, Header};
+    use serde_json::json;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tower::util::ServiceExt;
+
+    fn init_test_config() {
+        G_CONFIG.get_or_init(|| {
+            let mut config: config::Config = toml::from_str("").unwrap();
+            config.admin_user = Some("admin".into());
+            config.admin_pass = Some("test-password".into());
+            config.jwt_secret = Some("test-jwt-secret".into());
+            config
+        });
+    }
+
+    fn admin_token() -> String {
+        init_test_config();
+        let now = usize::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap();
+        encode(
+            &Header::default(),
+            &jwt::Claims {
+                sub: "admin".into(),
+                scope: "admin".into(),
+                iat: now,
+                exp: now + 3600,
+                pwdv: 0,
+            },
+            &jwt::KEYS.encoding,
+        )
+        .unwrap()
+    }
+
+    fn init_test_admin_state() {
+        admin::init().unwrap();
+    }
+
+    fn notification_test_request(kind: &str, payload: serde_json::Value, token: Option<&str>) -> Request<Body> {
+        let mut request = Request::post(format!("/api/admin/notify-test/{kind}"))
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        request.body(Body::from(payload.to_string())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn notification_test_routes_require_admin_auth() {
+        init_test_config();
+        for kind in ["tgbot", "bark", "wechat", "email", "webhook", "log"] {
+            let response = create_app_router()
+                .oneshot(notification_test_request(kind, json!({}), None))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "kind={kind}");
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_test_routes_reject_invalid_admin_tokens() {
+        init_test_config();
+        for kind in ["tgbot", "bark", "wechat", "email", "webhook", "log"] {
+            let response = create_app_router()
+                .oneshot(notification_test_request(kind, json!({}), Some("invalid-admin-token")))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "kind={kind}");
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_test_routes_dispatch_all_supported_kinds() {
+        let token = admin_token();
+        for kind in ["tgbot", "bark", "wechat", "email", "webhook", "log"] {
+            let response = create_app_router()
+                .oneshot(notification_test_request(kind, json!({}), Some(&token)))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "kind={kind}");
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_test_routes_return_not_found_for_unknown_kind() {
+        let token = admin_token();
+        let response = create_app_router()
+            .oneshot(notification_test_request("unknown", json!({}), Some(&token)))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn notification_delivery_failures_are_bad_gateway_and_redacted() {
+        async fn rejected() -> (StatusCode, Json<serde_json::Value>) {
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "code": 400,
+                    "message": "sentinel-provider-body-secret",
+                })),
+            )
+        }
+
+        let app = Router::new().route("/push", post(rejected));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let token = admin_token();
+        let response = create_app_router()
+            .oneshot(notification_test_request(
+                "bark",
+                json!({
+                    "bark": {
+                        "enabled": true,
+                        "server": format!("http://{address}"),
+                        "device_key": "sentinel-device-key",
+                        "timeout": 1
+                    }
+                }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body.contains("sentinel-provider-body-secret"));
+        assert!(!body.contains("sentinel-device-key"));
+    }
+
+    #[tokio::test]
+    async fn notification_test_webhook_payload_dispatches_structured_receiver() {
+        async fn accepted(State(deliveries): State<Arc<AtomicUsize>>) -> StatusCode {
+            deliveries.fetch_add(1, Ordering::SeqCst);
+            StatusCode::NO_CONTENT
+        }
+
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/notify", post(accepted))
+            .with_state(Arc::clone(&deliveries));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let token = admin_token();
+        let response = create_app_router()
+            .oneshot(notification_test_request(
+                "webhook",
+                json!({
+                    "webhook": {
+                        "enabled": true,
+                        "receivers": [{
+                            "id": "local-receiver",
+                            "name": "Local receiver",
+                            "enabled": true,
+                            "url": format!("http://{address}/notify"),
+                            "timeout": 1,
+                            "body_tpl": "ServerStatus test"
+                        }]
+                    }
+                }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_admin_settings_return_bad_request_without_replacing_state() {
+        init_test_admin_state();
+        let before = serde_json::to_value(admin::public_snapshot()).unwrap();
+        let token = admin_token();
+        let invalid = admin::AdminData {
+            email: Some(admin::EmailOverride {
+                username: "not-an-email".into(),
+                to: "valid@example.com; invalid".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let request = Request::post("/api/admin/settings")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&invalid).unwrap()))
+            .unwrap();
+
+        let response = create_app_router().oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(serde_json::to_value(admin::public_snapshot()).unwrap(), before);
+    }
 
     #[test]
     fn registers_all_six_with_disabled_malformed_legacy_configs() {

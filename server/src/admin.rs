@@ -458,6 +458,17 @@ pub fn replace(data: AdminData) -> Result<AdminData> {
     replace_state_data(state, data)
 }
 
+pub(crate) fn validate_replacement(data: &AdminData) -> Result<()> {
+    let state = ADMIN_STATE.get().expect("admin state not initialized");
+    let current = state
+        .data
+        .lock()
+        .ok()
+        .map(|current| current.clone())
+        .unwrap_or_default();
+    prepare_replacement(data.clone(), &current).map(|_| ())
+}
+
 fn replace_state_data(state: &AdminState, data: AdminData) -> Result<AdminData> {
     let current = state
         .data
@@ -1485,7 +1496,7 @@ pub(crate) fn normalize_tgbot_override(config: &mut TgbotOverride) {
     normalize_secret(&mut config.chat_id, &mut config.clear_chat_id);
 }
 
-fn merge_webhook_secrets(next: &mut StructuredWebhookOverride, previous: &StructuredWebhookOverride) {
+pub(crate) fn merge_webhook_secrets(next: &mut StructuredWebhookOverride, previous: &StructuredWebhookOverride) {
     for receiver in &mut next.receivers {
         let Some(previous_receiver) = previous
             .receivers
@@ -1536,14 +1547,14 @@ fn validate_sensitive_field_identities(data: &AdminData) -> Result<()> {
     Ok(())
 }
 
-fn normalize_wechat_override(config: &mut WechatOverride) {
+pub(crate) fn normalize_wechat_override(config: &mut WechatOverride) {
     config.corp_id = config.corp_id.trim().to_string();
     config.agent_id = config.agent_id.trim().to_string();
     config.title = config.title.trim().to_string();
     normalize_secret(&mut config.corp_secret, &mut config.clear_corp_secret);
 }
 
-fn normalize_email_override(config: &mut EmailOverride) {
+pub(crate) fn normalize_email_override(config: &mut EmailOverride) {
     config.server = config.server.trim().to_string();
     config.username = config.username.trim().to_string();
     config.to = config.to.trim().to_string();
@@ -1552,7 +1563,7 @@ fn normalize_email_override(config: &mut EmailOverride) {
     normalize_secret(&mut config.password, &mut config.clear_password);
 }
 
-fn normalize_webhook_override(config: &mut StructuredWebhookOverride) {
+pub(crate) fn normalize_webhook_override(config: &mut StructuredWebhookOverride) {
     for receiver in &mut config.receivers {
         receiver.id = receiver.id.trim().to_string();
         receiver.name = receiver.name.trim().to_string();
@@ -1623,7 +1634,7 @@ fn validate_email_override(config: &EmailOverride) -> Result<()> {
     Ok(())
 }
 
-fn validate_structured_webhook(config: &StructuredWebhookOverride) -> Result<()> {
+pub(crate) fn validate_structured_webhook(config: &StructuredWebhookOverride) -> Result<()> {
     validate_webhook_identities(config)?;
     for receiver in &config.receivers {
         if receiver.name.is_empty() {
