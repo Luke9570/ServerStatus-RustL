@@ -92,7 +92,7 @@ impl KnownHost {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlertState {
     #[serde(default)]
     pub since: u64,
@@ -153,20 +153,53 @@ impl RuntimeStateStore {
         self.inner.lock().unwrap().hosts.insert(host.name.clone(), host);
     }
 
-    pub fn purge_hosts(&self, hosts: &HashSet<String>) {
+    pub fn purge_hosts(&self, hosts: &HashSet<String>) -> bool {
         if hosts.is_empty() {
-            return;
+            return false;
         }
 
         let mut state = self.inner.lock().unwrap();
+        let before_hosts = state.hosts.len();
+        let before_alerts = state.alerts.len();
         state.hosts.retain(|name, _| !hosts.contains(name));
         state
             .alerts
-            .retain(|key, _| !hosts.iter().any(|host| key.starts_with(&format!("{host}:"))));
+            .retain(|key, _| key.split_once(':').is_none_or(|(host, _)| !hosts.contains(host)));
+        state.hosts.len() != before_hosts || state.alerts.len() != before_alerts
     }
 
     pub fn replace_alerts(&self, alerts: HashMap<String, AlertState>) {
         self.inner.lock().unwrap().alerts = alerts;
+    }
+
+    pub fn update_alerts<T>(&self, update: impl FnOnce(&mut HashMap<String, AlertState>) -> T) -> (T, bool) {
+        let mut state = self.inner.lock().unwrap();
+        let previous = state.alerts.clone();
+        let result = update(&mut state.alerts);
+        let changed = state.alerts != previous;
+        (result, changed)
+    }
+
+    pub fn mark_alert_enqueued(&self, key: &str, now: u64) -> bool {
+        let mut state = self.inner.lock().unwrap();
+        let Some(alert) = state.alerts.get_mut(key) else {
+            return false;
+        };
+        if alert.last_enqueued_at == now {
+            return false;
+        }
+        alert.last_enqueued_at = now;
+        true
+    }
+
+    pub fn prune_alert_states(&self, active_rules: &HashSet<String>, active_hosts: &HashSet<String>) -> bool {
+        let mut state = self.inner.lock().unwrap();
+        let before = state.alerts.len();
+        state.alerts.retain(|key, _| {
+            key.split_once(':')
+                .is_some_and(|(host, rule)| active_hosts.contains(host) && active_rules.contains(rule))
+        });
+        state.alerts.len() != before
     }
 
     pub fn save(&self) -> Result<()> {
@@ -332,6 +365,29 @@ mod tests {
         let state = store.snapshot();
         assert!(state.hosts.is_empty());
         assert!(state.alerts.is_empty());
+
+        remove_file_if_present(&path);
+    }
+
+    #[test]
+    fn prune_alert_states_removes_disabled_rules_and_missing_hosts() {
+        let path = temporary_path("runtime-alert-prune.json");
+        let store = RuntimeStateStore::load(path.clone());
+        store.replace_alerts(HashMap::from([
+            (
+                "pve:offline".into(),
+                AlertState {
+                    since: 100,
+                    last_enqueued_at: 131,
+                },
+            ),
+            ("pve:disabled".into(), AlertState::default()),
+            ("gone:offline".into(), AlertState::default()),
+        ]));
+
+        assert!(store.prune_alert_states(&HashSet::from(["offline".into()]), &HashSet::from(["pve".into()]),));
+        assert_eq!(store.snapshot().alerts.len(), 1);
+        assert!(store.snapshot().alerts.contains_key("pve:offline"));
 
         remove_file_if_present(&path);
     }

@@ -19,7 +19,7 @@ use crate::config::{Host, HostGroup};
 use crate::expiry;
 use crate::notifier::{Event, Notifier};
 use crate::payload::{HostStat, StatsResp};
-use crate::runtime_state::{KnownHost, RuntimeStateStore};
+use crate::runtime_state::{AlertState, KnownHost, RuntimeStateStore};
 
 const SAVE_INTERVAL: u64 = 60;
 const DEFAULT_GROUP_ID: &str = "default";
@@ -29,14 +29,15 @@ const OS_LIST: [&str; 10] = [
 
 static STAT_SENDER: OnceCell<SyncSender<Cow<HostStat>>> = OnceCell::new();
 
-#[derive(Default)]
-struct AlertEvalState {
-    since: u64,
-    last_sent: u64,
-}
-
 struct NotifyMessage {
     event: Event,
+    stat: Arc<HostStat>,
+    notification_group: String,
+    notification_methods: Vec<String>,
+}
+
+struct AlertEvent {
+    key: String,
     stat: Arc<HostStat>,
     notification_group: String,
     notification_methods: Vec<String>,
@@ -72,6 +73,7 @@ pub struct StatsMgr {
     stats_data: Arc<Mutex<StatsResp>>,
     stat_map: Arc<Mutex<HashMap<String, Arc<HostStat>>>>,
     hosts_map: Arc<Mutex<HashMap<String, Host>>>,
+    runtime_state: Arc<Mutex<Option<Arc<RuntimeStateStore>>>>,
 }
 
 impl StatsMgr {
@@ -81,6 +83,7 @@ impl StatsMgr {
             stats_data: Arc::new(Mutex::new(StatsResp::new())),
             stat_map: Arc::new(Mutex::new(HashMap::new())),
             hosts_map: Arc::new(Mutex::new(HashMap::new())),
+            runtime_state: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -152,6 +155,7 @@ impl StatsMgr {
         let runtime_state = Arc::new(RuntimeStateStore::load(
             std::path::PathBuf::from(&cfg.workspace).join("runtime-state.json"),
         ));
+        *self.runtime_state.lock().unwrap() = Some(Arc::clone(&runtime_state));
         let known_hosts: Vec<KnownHost> = runtime_state.snapshot().hosts.into_values().collect();
         let known_host_groups = known_hosts
             .iter()
@@ -348,7 +352,7 @@ impl StatsMgr {
             let mut latest_save_ts = 0_u64;
             let mut latest_alert_check_ts = 0_u64;
             let mut expire_notify_state: HashMap<String, String> = HashMap::new();
-            let mut alert_rule_state: HashMap<String, AlertEvalState> = HashMap::new();
+            let mut alert_state_dirty = false;
             move || loop {
                 thread::sleep(Duration::from_millis(500));
 
@@ -360,9 +364,15 @@ impl StatsMgr {
                 let server_groups = crate::admin::snapshot().server_groups;
                 let deleted_hosts = crate::admin::deleted_hosts();
                 let expire_check_due = expire_notify.enabled && latest_alert_check_ts + expire_notify.interval < now;
+                let active_rule_ids = alert_rules.iter().map(|rule| rule.id.clone()).collect::<HashSet<_>>();
+                let mut active_hosts = HashSet::new();
+                let mut alert_state_changed = false;
+                let mut have_live_hosts = false;
 
                 if let Ok(mut host_stat_map) = stat_map.lock() {
+                    have_live_hosts = true;
                     for (_, stat) in host_stat_map.iter_mut() {
+                        active_hosts.insert(stat.name.clone());
                         if !should_publish_stat(stat, &deleted_hosts) {
                             continue;
                         }
@@ -406,8 +416,10 @@ impl StatsMgr {
                                 false
                             };
 
-                            let health_events =
-                                collect_alert_events(o, now, &alert_rules, &server_groups, &mut alert_rule_state);
+                            let (health_events, state_changed) = runtime_state.update_alerts(|alerts| {
+                                collect_alert_events(o, now, &alert_rules, &server_groups, alerts)
+                            });
+                            alert_state_changed |= state_changed;
 
                             let node_event = if o.notify && latest_notify_ts + cfg.notify_interval < now {
                                 if o.online4 || o.online6 {
@@ -430,13 +442,18 @@ impl StatsMgr {
                         if notify_event.1 {
                             notifier_tx.send(NotifyMessage::new(Event::Expire, Arc::clone(stat)));
                         }
-                        for (health_stat, notification_group, notification_methods) in notify_event.2 {
-                            notifier_tx.send(NotifyMessage::with_rule(
-                                Event::Health,
-                                health_stat,
-                                notification_group,
-                                notification_methods,
-                            ));
+                        for health_event in notify_event.2 {
+                            if notifier_tx
+                                .send(NotifyMessage::with_rule(
+                                    Event::Health,
+                                    health_event.stat,
+                                    health_event.notification_group,
+                                    health_event.notification_methods,
+                                ))
+                                .is_ok()
+                            {
+                                alert_state_changed |= runtime_state.mark_alert_enqueued(&health_event.key, now);
+                            }
                         }
 
                         resp.servers.push(Arc::clone(stat));
@@ -446,6 +463,16 @@ impl StatsMgr {
                     }
                     if expire_check_due {
                         latest_alert_check_ts = now;
+                    }
+                }
+                if have_live_hosts {
+                    alert_state_changed |= runtime_state.prune_alert_states(&active_rule_ids, &active_hosts);
+                }
+                alert_state_dirty |= alert_state_changed;
+                if alert_state_dirty {
+                    match runtime_state.save() {
+                        Ok(()) => alert_state_dirty = false,
+                        Err(err) => warn!("failed to save alert runtime state: {err}"),
                     }
                 }
 
@@ -507,10 +534,17 @@ impl StatsMgr {
         if let Ok(mut hosts_map) = self.hosts_map.lock() {
             hosts_map.retain(|name, _| !hosts.contains(name));
         }
+        if let Some(runtime_state) = self.runtime_state.lock().ok().and_then(|state| state.clone()) {
+            runtime_state.purge_hosts(hosts);
+            if let Err(err) = runtime_state.save() {
+                warn!("failed to save purged runtime state: {err}");
+            }
+        }
         if let Ok(mut stats_data) = self.stats_data.lock() {
             stats_data.servers.retain(|stat| !hosts.contains(&stat.name));
+            let public_json = serde_json::to_string(&*stats_data).unwrap_or_else(|_| "{}".to_string());
             if let Ok(mut resp_json) = self.resp_json.lock() {
-                *resp_json = serde_json::to_string(&*stats_data).unwrap_or_else(|_| "{}".to_string());
+                *resp_json = public_json;
             }
             Self::save_stats_snapshot(&stats_data);
         }
@@ -599,8 +633,8 @@ fn collect_alert_events(
     now: u64,
     rules: &[crate::admin::AlertRuleOverride],
     server_groups: &[crate::admin::ServerGroupOverride],
-    states: &mut HashMap<String, AlertEvalState>,
-) -> Vec<(Arc<HostStat>, String, Vec<String>)> {
+    states: &mut HashMap<String, AlertState>,
+) -> Vec<AlertEvent> {
     if !stat.notify || rules.is_empty() {
         return Vec::new();
     }
@@ -613,18 +647,23 @@ fn collect_alert_events(
         }
         let key = format!("{}:{}", stat.name, rule.id);
         if rule.metric == "offline" {
-            let state = states.entry(key).or_default();
+            let state = states.entry(key.clone()).or_default();
             if online {
                 state.since = 0;
                 continue;
             }
-            if stat.latest_ts + rule.duration < now && state.last_sent + rule.repeat_interval < now {
-                state.last_sent = now;
-                events.push((
-                    stat_with_custom(stat, offline_alert_message(stat, rule.duration)),
-                    rule.notification_group.clone(),
-                    rule.notifications.clone(),
-                ));
+            if state.since == 0 {
+                state.since = stat.latest_ts;
+            }
+            if stat.latest_ts + rule.duration < now
+                && (state.last_enqueued_at == 0 || state.last_enqueued_at + rule.repeat_interval < now)
+            {
+                events.push(AlertEvent {
+                    key,
+                    stat: stat_with_custom(stat, offline_alert_message(stat, rule.duration)),
+                    notification_group: rule.notification_group.clone(),
+                    notification_methods: rule.notifications.clone(),
+                });
             }
             continue;
         }
@@ -641,18 +680,20 @@ fn collect_alert_events(
             states.remove(&key);
             continue;
         };
-        let state = states.entry(key).or_default();
+        let state = states.entry(key.clone()).or_default();
         if current > threshold {
             if state.since == 0 {
                 state.since = now;
             }
-            if now.saturating_sub(state.since) >= rule.duration && state.last_sent + rule.repeat_interval < now {
-                state.last_sent = now;
-                events.push((
-                    stat_with_custom(stat, usage_alert_message(stat, rule, current, threshold)),
-                    rule.notification_group.clone(),
-                    rule.notifications.clone(),
-                ));
+            if now.saturating_sub(state.since) >= rule.duration
+                && (state.last_enqueued_at == 0 || state.last_enqueued_at + rule.repeat_interval < now)
+            {
+                events.push(AlertEvent {
+                    key,
+                    stat: stat_with_custom(stat, usage_alert_message(stat, rule, current, threshold)),
+                    notification_group: rule.notification_group.clone(),
+                    notification_methods: rule.notifications.clone(),
+                });
             }
         } else {
             state.since = 0;
@@ -992,7 +1033,7 @@ fn usage_alert_message(
 mod tests {
     use super::*;
     use crate::config::HostGroup;
-    use crate::runtime_state::KnownHost;
+    use crate::runtime_state::{AlertState, KnownHost, RuntimeStateStore};
     use stat_common::server_status::{IpInfo, SysInfo};
 
     #[test]
@@ -1112,6 +1153,79 @@ mod tests {
         let labels = public_stat_labels("os=debian;note=private;public_note=shared;spec=2C/4G");
 
         assert_eq!(labels, "os=debian;public_note=shared;spec=2C/4G");
+    }
+
+    #[test]
+    fn unrestricted_offline_rule_routes_only_selected_bark() {
+        let stat = HostStat {
+            name: "pve".into(),
+            latest_ts: 100,
+            notify: true,
+            online4: false,
+            online6: false,
+            ..Default::default()
+        };
+        let rule = crate::admin::AlertRuleOverride {
+            id: "offline-all".into(),
+            metric: "offline".into(),
+            duration: 30,
+            repeat_interval: 3600,
+            notifications: vec!["bark".into()],
+            ..Default::default()
+        };
+
+        let events = collect_alert_events(&stat, 131, &[rule], &[], &mut HashMap::new());
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].notification_methods, vec!["bark"]);
+    }
+
+    #[test]
+    fn purge_hosts_removes_runtime_alerts_and_persists_state() {
+        let path = std::env::temp_dir().join(format!("ssr-purge-{}.json", uuid::Uuid::new_v4()));
+        let runtime_state = Arc::new(RuntimeStateStore::load(path.clone()));
+        runtime_state.upsert_host(KnownHost {
+            name: "srv-gone".into(),
+            ..Default::default()
+        });
+        runtime_state.replace_alerts(HashMap::from([(
+            "srv-gone:offline".into(),
+            AlertState {
+                since: 100,
+                last_enqueued_at: 131,
+            },
+        )]));
+        runtime_state.save().unwrap();
+
+        let mgr = StatsMgr::new();
+        *mgr.runtime_state.lock().unwrap() = Some(Arc::clone(&runtime_state));
+        mgr.hosts_map.lock().unwrap().insert(
+            "srv-gone".into(),
+            Host {
+                name: "srv-gone".into(),
+                ..Default::default()
+            },
+        );
+        mgr.stat_map.lock().unwrap().insert(
+            "srv-gone".into(),
+            Arc::new(HostStat {
+                name: "srv-gone".into(),
+                ..Default::default()
+            }),
+        );
+        mgr.stats_data.lock().unwrap().servers.push(Arc::new(HostStat {
+            name: "srv-gone".into(),
+            ..Default::default()
+        }));
+
+        mgr.purge_hosts(&HashSet::from(["srv-gone".into()]));
+
+        assert!(runtime_state.snapshot().hosts.is_empty());
+        assert!(runtime_state.snapshot().alerts.is_empty());
+        assert!(RuntimeStateStore::load(path.clone()).snapshot().alerts.is_empty());
+        assert!(!mgr.get_stats_json().contains("srv-gone"));
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
