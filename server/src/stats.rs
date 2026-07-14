@@ -1,4 +1,3 @@
-#![allow(unused)]
 use anyhow::Result;
 use chrono::{Datelike, Local, Timelike};
 use once_cell::sync::OnceCell;
@@ -205,8 +204,10 @@ impl StatsMgr {
             Self::load_last_network(&mut hosts_map_guard);
         }
 
-        let runtime_state = Arc::new(RuntimeStateStore::load(
-            std::path::PathBuf::from(&cfg.workspace).join("runtime-state.json"),
+        let runtime_state = Arc::new(RuntimeStateStore::load_or_import_legacy(
+            runtime_state_path_for_stats_snapshot(&self.stats_snapshot_path),
+            &self.stats_snapshot_path,
+            &crate::admin::deleted_hosts(),
         ));
         *self.runtime_state.lock().unwrap() = Some(Arc::clone(&runtime_state));
         let known_hosts: Vec<KnownHost> = runtime_state.snapshot().hosts.into_values().collect();
@@ -379,7 +380,7 @@ impl StatsMgr {
                             let arc_stat = Arc::new(stat.into_owned());
                             if notify_up {
                                 // node up notify
-                                notifier_tx.send(NotifyMessage::new(Event::NodeUp, Arc::clone(&arc_stat)));
+                                let _ = notifier_tx.send(NotifyMessage::new(Event::NodeUp, Arc::clone(&arc_stat)));
                             }
                             host_stat_map.insert(arc_stat.name.clone(), Arc::clone(&arc_stat));
                             runtime_state.upsert_host(KnownHost::from_stat(&arc_stat));
@@ -453,9 +454,9 @@ impl StatsMgr {
                                     for s in &OS_LIST {
                                         if os_r.contains(s) {
                                             if o.labels.is_empty() {
-                                                write!(o.labels, "os={s}");
+                                                let _ = write!(o.labels, "os={s}");
                                             } else {
-                                                write!(o.labels, ";os={s}");
+                                                let _ = write!(o.labels, ";os={s}");
                                             }
                                             break;
                                         }
@@ -495,11 +496,11 @@ impl StatsMgr {
 
                         // client notify — Arc::clone is O(1), no HostStat copy
                         if let Some(event) = notify_event.0 {
-                            notifier_tx.send(NotifyMessage::new(event, Arc::clone(stat)));
+                            let _ = notifier_tx.send(NotifyMessage::new(event, Arc::clone(stat)));
                             any_notified = true;
                         }
                         if notify_event.1 {
-                            notifier_tx.send(NotifyMessage::new(Event::Expire, Arc::clone(stat)));
+                            let _ = notifier_tx.send(NotifyMessage::new(Event::Expire, Arc::clone(stat)));
                         }
                         for health_event in notify_event.2 {
                             if notifier_tx
@@ -589,6 +590,7 @@ impl StatsMgr {
         self.resp_json.lock().unwrap().to_string()
     }
 
+    #[cfg(test)]
     pub fn purge_hosts(&self, hosts: &HashSet<String>) -> Result<()> {
         self.with_host_lifecycle(|| self.purge_hosts_locked(hosts, || {}))
     }
@@ -605,6 +607,7 @@ impl StatsMgr {
         action()
     }
 
+    #[cfg(test)]
     fn purge_hosts_with_after_generation(
         &self,
         hosts: &HashSet<String>,
@@ -613,6 +616,7 @@ impl StatsMgr {
         self.with_host_lifecycle(|| self.purge_hosts_locked(hosts, after_generation))
     }
 
+    #[cfg(test)]
     fn purge_hosts_with_after_lifecycle(
         &self,
         hosts: &HashSet<String>,
@@ -706,6 +710,7 @@ impl StatsMgr {
         );
     }
 
+    #[cfg(test)]
     fn publish_snapshot_if_current(&self, snapshot_generation: u64, resp: StatsResp) -> bool {
         let _publication = self.publication_lock.lock().unwrap();
         publish_snapshot_if_current(
@@ -735,7 +740,7 @@ impl StatsMgr {
         match serde_json::from_value(data) {
             Ok(stat) => {
                 trace!("send stat => {stat:?} ");
-                SENDER.send(Cow::Owned(stat));
+                let _ = SENDER.send(Cow::Owned(stat));
             }
             Err(err) => {
                 error!("report error => {err:?}");
@@ -765,6 +770,13 @@ impl StatsMgr {
 
 fn snapshot_parent_directory(path: &Path) -> &Path {
     path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
+}
+
+fn runtime_state_path_for_stats_snapshot(stats_snapshot_path: &Path) -> PathBuf {
+    stats_snapshot_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("runtime-state.json"), |parent| parent.join("runtime-state.json"))
 }
 
 fn sync_snapshot_parent_directory(path: &Path) -> Result<()> {
@@ -1807,6 +1819,18 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&directory).unwrap();
+    }
+
+    #[test]
+    fn runtime_state_path_shares_the_stats_snapshot_directory() {
+        assert_eq!(
+            runtime_state_path_for_stats_snapshot(Path::new("/data/stats.json")),
+            PathBuf::from("/data/runtime-state.json"),
+        );
+        assert_eq!(
+            runtime_state_path_for_stats_snapshot(Path::new("stats.json")),
+            PathBuf::from("runtime-state.json"),
+        );
     }
 
     #[test]

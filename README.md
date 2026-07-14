@@ -19,10 +19,10 @@
 - 后台 API 使用 JWT 保护，未登录或错误 token 应返回 `401`。
 - 登录接口会对连续失败做短时间限速，避免后台密码被高频尝试。
 - 前端可读取的后台配置会脱敏，不返回 Agent 密码、接入组密码、`admin_pass`、`jwt_secret`、Telegram token 或 Bark device key。
-- 后台复制的一键接入 URL 不再包含真实 Agent/接入组密码，只包含默认 24 小时有效的安装令牌。
+- 后台复制的一键接入 URL 不再包含真实 Agent/接入组密码，只包含默认 15 分钟有效的安装令牌。
 - 静态页面会返回基础安全响应头，例如 `X-Content-Type-Options`、`Referrer-Policy` 和 `X-Frame-Options`。这些响应头不影响 Nginx Proxy Manager 反向代理。
 - 后台修改的运行时配置会写入工作目录中的 `admin-overrides.json`，不要提交到 Git。
-- 已认证的服务器会写入 `workspace/runtime-state.json`。服务器暂时离线时仍保留在状态数据中，并以离线状态显示；只有在后台删除服务器后才会从主页移除。
+- 已认证的服务器会写入工作目录中的 `runtime-state.json`。服务器暂时离线时仍保留在状态数据中，并以离线状态显示；只有在后台删除服务器后才会从主页移除。
 - 不要提交 `runtime/`、`runtime-state.json`、`admin-overrides.json`、`stats.json`、真实后台密码、JWT 密钥、通知 token 或接入密钥。
 
 ## 快速部署
@@ -65,11 +65,10 @@ openssl rand -base64 32
 
 ### Compose 运行时持久化
 
-默认样例的 `workspace = "/opt/ServerStatus"`，所以运行时状态文件实际为 `/opt/ServerStatus/runtime-state.json`。Compose 部署必须把宿主机的 `runtime/` 挂载到容器的 `/opt/ServerStatus`，并保留现有的 `./runtime:/data` 挂载以保存工作目录中的管理后台覆写文件。例如在 `docker-compose.yml` 的 `volumes` 中同时保留：
+默认 Compose 的工作目录是 `/data`。现有的 `./runtime:/data` 挂载会持久化 `/data/admin-overrides.json`、`/data/stats.json` 和 `/data/runtime-state.json`，不需要额外挂载 `/opt/ServerStatus`：
 
 ```yaml
       - ./runtime:/data
-      - ./runtime:/opt/ServerStatus
 ```
 
 更新镜像或重建容器时不要删除宿主机的 `runtime/`；其中的服务器运行时状态、后台覆写和告警状态必须跨容器保留。

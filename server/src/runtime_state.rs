@@ -156,6 +156,33 @@ impl RuntimeStateStore {
         }
     }
 
+    pub fn load_or_import_legacy(path: PathBuf, legacy_stats_path: &Path, deleted_hosts: &HashSet<String>) -> Self {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => Self::load(path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let store = Self::load(path.clone());
+                for host in import_legacy_stats(legacy_stats_path, deleted_hosts) {
+                    store.upsert_host(host);
+                }
+                match store.save() {
+                    Ok(SaveResult::Published) => store,
+                    Ok(SaveResult::Skipped) => {
+                        warn!("legacy runtime state migration save was skipped; starting with empty runtime state");
+                        Self::load(path)
+                    }
+                    Err(err) => {
+                        warn!("failed to persist legacy runtime state migration: {err}; starting with empty runtime state");
+                        Self::load(path)
+                    }
+                }
+            }
+            Err(err) => {
+                warn!("could not inspect runtime state file; skip legacy import: {err}");
+                Self::load(path)
+            }
+        }
+    }
+
     pub fn snapshot(&self) -> RuntimeState {
         self.inner.lock().unwrap().state.clone()
     }
@@ -188,6 +215,7 @@ impl RuntimeStateStore {
         changed
     }
 
+    #[cfg(test)]
     pub fn replace_alerts(&self, alerts: HashMap<String, AlertState>) {
         let mut state = self.inner.lock().unwrap();
         if state.state.alerts != alerts {
@@ -431,6 +459,52 @@ mod tests {
         assert_eq!(imported[0].labels, "os=debian");
 
         remove_file_if_present(&path);
+    }
+
+    #[test]
+    fn first_start_imports_legacy_stats_and_persists_runtime_state() {
+        let directory = temporary_path("runtime-legacy-migration");
+        fs::create_dir_all(&directory).unwrap();
+        let legacy_path = directory.join("stats.json");
+        let runtime_path = directory.join("runtime-state.json");
+        fs::write(
+            &legacy_path,
+            r#"{"servers":[{"name":"keep","alias":"PVE"},{"name":"gone"}]}"#,
+        )
+        .unwrap();
+
+        let store = RuntimeStateStore::load_or_import_legacy(
+            runtime_path.clone(),
+            &legacy_path,
+            &HashSet::from(["gone".into()]),
+        );
+
+        assert!(store.snapshot().hosts.contains_key("keep"));
+        assert!(!store.snapshot().hosts.contains_key("gone"));
+        assert!(runtime_path.exists());
+        assert!(RuntimeStateStore::load(runtime_path.clone()).snapshot().hosts.contains_key("keep"));
+
+        remove_file_if_present(&runtime_path);
+        remove_file_if_present(&legacy_path);
+        fs::remove_dir(&directory).unwrap();
+    }
+
+    #[test]
+    fn existing_runtime_state_prevents_legacy_reimport() {
+        let directory = temporary_path("runtime-legacy-no-reimport");
+        fs::create_dir_all(&directory).unwrap();
+        let legacy_path = directory.join("stats.json");
+        let runtime_path = directory.join("runtime-state.json");
+        fs::write(&legacy_path, r#"{"servers":[{"name":"legacy-host"}]}"#).unwrap();
+        RuntimeStateStore::load(runtime_path.clone()).save().unwrap();
+
+        let store = RuntimeStateStore::load_or_import_legacy(runtime_path.clone(), &legacy_path, &HashSet::new());
+
+        assert!(store.snapshot().hosts.is_empty());
+
+        remove_file_if_present(&runtime_path);
+        remove_file_if_present(&legacy_path);
+        fs::remove_dir(&directory).unwrap();
     }
 
     #[test]
