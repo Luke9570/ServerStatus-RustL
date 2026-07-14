@@ -103,4 +103,87 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn admin_local_saves_keep_global_drafts_isolated() {
+        let admin_js = Asset::get("/static/js/admin.js").expect("embedded admin JavaScript");
+        let admin_js = std::str::from_utf8(admin_js.data.as_ref()).expect("UTF-8 admin JavaScript");
+
+        let scoped_save = admin_js
+            .split("async function saveScopedSettings")
+            .nth(1)
+            .and_then(|section| section.split("async function readJson").next())
+            .expect("scoped settings save helper");
+        assert!(
+            scoped_save.contains("await getJson(\"/api/admin/settings\")"),
+            "local saves must start from a fresh backend settings snapshot"
+        );
+        assert!(
+            scoped_save.contains("settingsPayloadFromSettings(settings.data || {}, overrides)"),
+            "local saves must build their complete payload from the backend snapshot"
+        );
+        assert!(
+            scoped_save.contains("preserveState: true") && scoped_save.contains("markClean: false"),
+            "local saves must not replace or clean global draft state"
+        );
+
+        let snapshot_payload = admin_js
+            .split("function settingsPayloadFromSettings")
+            .nth(1)
+            .and_then(|section| section.split("function settingsPayloadFromState").next())
+            .expect("backend snapshot payload helper");
+        for field in [
+            "hosts: current.hosts || {}",
+            "deleted_hosts: current.deleted_hosts || []",
+            "access_keys: current.access_keys || {}",
+            "deleted_access_keys: current.deleted_access_keys || []",
+            "alert_rules: current.alert_rules || []",
+        ] {
+            assert!(
+                snapshot_payload.contains(field),
+                "scoped replacement payload must retain backend {field}"
+            );
+        }
+
+        let notification_save = admin_js
+            .split("async function saveNotificationModule")
+            .nth(1)
+            .and_then(|section| section.split("async function resetNotificationOverride").next())
+            .expect("notification save helper");
+        let access_save = admin_js
+            .split("async function saveAccessSettings")
+            .nth(1)
+            .and_then(|section| section.split("async function saveExpireNotifySettings").next())
+            .expect("access save helper");
+        let expire_save = admin_js
+            .split("async function saveExpireNotifySettings")
+            .nth(1)
+            .and_then(|section| section.split("function validAdminUsername").next())
+            .expect("expiry save helper");
+
+        for (name, section) in [
+            ("notification", notification_save),
+            ("access", access_save),
+            ("expiry", expire_save),
+        ] {
+            assert!(
+                section.contains("saveScopedSettings("),
+                "{name} save must use the isolated save path"
+            );
+            assert!(
+                !section.contains("settingsPayloadFromState("),
+                "{name} save must not serialize unrelated UI drafts"
+            );
+        }
+
+        let notification_reload = admin_js
+            .split("async function reloadNotificationState")
+            .nth(1)
+            .and_then(|section| section.split("async function saveNotificationModule").next())
+            .expect("notification reload helper");
+        assert!(
+            notification_reload.contains("mergeScopedSettings([notificationSettingKey(scope)], settings.data || {})"),
+            "notification reload must merge only its saved scope"
+        );
+    }
 }

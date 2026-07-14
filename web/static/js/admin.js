@@ -439,29 +439,41 @@
     return state.dirty || Object.values(state.localDirty).some(Boolean);
   }
 
-  function settingsPayloadFromState(overrides = {}) {
-    ensureSettings();
+  function settingsPayloadFromSettings(settings, overrides = {}) {
+    const current = settings || {};
     return {
-      hosts: state.settings.hosts || {},
-      groups: state.settings.groups || {},
-      deleted_hosts: [...state.deletedHosts],
-      server_groups: state.settings.server_groups || [],
-      access_keys: state.settings.access_keys || {},
-      deleted_access_keys: state.settings.deleted_access_keys || [],
+      hosts: current.hosts || {},
+      groups: current.groups || {},
+      deleted_hosts: current.deleted_hosts || [],
+      server_groups: current.server_groups || [],
+      access_keys: current.access_keys || {},
+      deleted_access_keys: current.deleted_access_keys || [],
       notification_groups: [],
-      alert_rules: state.settings.alert_rules || [],
-      admin_path: state.settings.admin_path || "/admin",
-      access_base_url: state.settings.access_base_url || "",
-      agent_base_url: state.settings.agent_base_url || "",
-      expire_notify: state.settings.expire_notify,
-      tgbot: state.settings.tgbot,
-      bark: state.settings.bark,
-      wechat: state.settings.wechat,
-      email: state.settings.email,
-      webhook: state.settings.webhook,
-      log: state.settings.log,
+      alert_rules: current.alert_rules || [],
+      admin_path: current.admin_path || "/admin",
+      access_base_url: current.access_base_url || "",
+      agent_base_url: current.agent_base_url || "",
+      expire_notify: current.expire_notify,
+      tgbot: current.tgbot,
+      bark: current.bark,
+      wechat: current.wechat,
+      email: current.email,
+      webhook: current.webhook,
+      log: current.log,
       ...overrides,
     };
+  }
+
+  function settingsPayloadFromState(overrides = {}) {
+    ensureSettings();
+    return settingsPayloadFromSettings(
+      {
+        ...state.settings,
+        deleted_hosts: [...state.deletedHosts],
+        deleted_access_keys: [...state.deletedAccessKeys],
+      },
+      overrides,
+    );
   }
 
   async function postSettings(payload) {
@@ -489,29 +501,32 @@
       render = "all",
       busyButton = null,
       markClean = true,
+      preserveState = false,
     } = options;
     setButtonBusy(busyButton, true);
     try {
       const responsePayload = await postSettings(payload);
-      state.settings = responsePayload.data || {};
-      ensureSettings();
-      await refreshStatsForRender(render);
-      if (render === "all") {
-        renderAll();
-      } else if (render === "tables") {
-        renderTables();
-      } else if (render === "notifications") {
-        renderNotifications();
-        renderAlertRules();
-      } else if (render === "settings") {
-        renderSettings();
+      if (!preserveState) {
+        state.settings = responsePayload.data || {};
+        ensureSettings();
+        await refreshStatsForRender(render);
+        if (render === "all") {
+          renderAll();
+        } else if (render === "tables") {
+          renderTables();
+        } else if (render === "notifications") {
+          renderNotifications();
+          renderAlertRules();
+        } else if (render === "settings") {
+          renderSettings();
+        }
       }
       if (markClean) {
         markPristine("");
       }
       text(messageTarget, successMessage);
       showToast(successMessage);
-      return true;
+      return responsePayload.data || {};
     } catch (err) {
       if (err.authExpired) {
         setView("login");
@@ -524,6 +539,39 @@
     } finally {
       setButtonBusy(busyButton, false);
     }
+  }
+
+  async function saveScopedSettings(overrides, options = {}) {
+    const { messageTarget = "#save-message", busyButton = null } = options;
+    setButtonBusy(busyButton, true);
+    try {
+      const settings = await getJson("/api/admin/settings");
+      const payload = settingsPayloadFromSettings(settings.data || {}, overrides);
+      return await saveSettingsPayload(payload, {
+        ...options,
+        busyButton: null,
+        preserveState: true,
+        markClean: false,
+      });
+    } catch (err) {
+      if (err.authExpired) {
+        setView("login");
+        text("#login-message", "登录已过期，请重新登录");
+      }
+      const message = `保存失败: ${err.message}`;
+      text(messageTarget, message);
+      showToast(message, "warn");
+      return false;
+    } finally {
+      setButtonBusy(busyButton, false);
+    }
+  }
+
+  function mergeScopedSettings(keys, savedSettings) {
+    state.settings = { ...state.settings };
+    keys.forEach((key) => {
+      state.settings[key] = savedSettings[key];
+    });
   }
 
   async function readJson(response) {
@@ -2961,6 +3009,17 @@
     await saveNotificationModule("log", "log", collectLogSettings(), "本地日志");
   }
 
+  function notificationSettingKey(scope) {
+    return {
+      tg: "tgbot",
+      bark: "bark",
+      wechat: "wechat",
+      email: "email",
+      webhook: "webhook",
+      log: "log",
+    }[scope];
+  }
+
   async function reloadNotificationState(scope) {
     const configuredMethods = state.config?.configured_notification_methods || [];
     const [config, settings] = await Promise.all([
@@ -2968,8 +3027,7 @@
       getJson("/api/admin/settings"),
     ]);
     state.config = config;
-    state.settings = settings.data || {};
-    ensureSettings();
+    mergeScopedSettings([notificationSettingKey(scope)], settings.data || {});
     renderNotification(scope);
     const refreshedMethods = state.config?.configured_notification_methods || [];
     const methodsChanged =
@@ -2980,7 +3038,7 @@
   }
 
   async function saveNotificationModule(scope, key, value, label) {
-    const ok = await saveSettingsPayload(settingsPayloadFromState({ [key]: value }), {
+    const ok = await saveScopedSettings({ [key]: value }, {
       successMessage: `${label} 已同步到后端`,
       messageTarget: `#${scope}-save-message`,
       render: "none",
@@ -3003,7 +3061,7 @@
     if (!window.confirm(`确定还原 ${label} 为配置文件中的设置？这只会删除该通知方式的后台覆盖配置。`)) {
       return;
     }
-    const ok = await saveSettingsPayload(settingsPayloadFromState({ [key]: null }), {
+    const ok = await saveScopedSettings({ [key]: null }, {
       successMessage: `${label} 已还原为配置文件设置`,
       messageTarget: `#${scope}-save-message`,
       render: "none",
@@ -3134,13 +3192,14 @@
 
   async function saveAccessSettings() {
     const access = collectAccessSettings();
-    const ok = await saveSettingsPayload(settingsPayloadFromState(access), {
+    const savedSettings = await saveScopedSettings(access, {
       successMessage: "接入地址已同步到后端",
       messageTarget: "#access-save-message",
       render: "none",
       busyButton: $("#access-save"),
     });
-    if (ok) {
+    if (savedSettings) {
+      mergeScopedSettings(["access_base_url", "agent_base_url"], savedSettings);
       $("#access-base-url").value = access.access_base_url;
       $("#agent-base-url").value = access.agent_base_url;
       resetLocalBaseline("access", "接入地址已同步到后端");
@@ -3156,13 +3215,14 @@
       showToast(err.message, "warn");
       return;
     }
-    const ok = await saveSettingsPayload(settingsPayloadFromState({ expire_notify: expireNotify }), {
+    const savedSettings = await saveScopedSettings({ expire_notify: expireNotify }, {
       successMessage: "到期提醒已同步到后端",
       messageTarget: "#expire-save-message",
       render: "none",
       busyButton: $("#expire-save"),
     });
-    if (ok) {
+    if (savedSettings) {
+      mergeScopedSettings(["expire_notify"], savedSettings);
       resetLocalBaseline("expire", "到期提醒已同步到后端");
     }
   }
