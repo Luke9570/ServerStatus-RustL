@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -74,6 +75,8 @@ pub struct StatsMgr {
     stat_map: Arc<Mutex<HashMap<String, Arc<HostStat>>>>,
     hosts_map: Arc<Mutex<HashMap<String, Host>>>,
     runtime_state: Arc<Mutex<Option<Arc<RuntimeStateStore>>>>,
+    publication_generation: Arc<AtomicU64>,
+    publication_lock: Arc<Mutex<()>>,
 }
 
 impl StatsMgr {
@@ -84,6 +87,8 @@ impl StatsMgr {
             stat_map: Arc::new(Mutex::new(HashMap::new())),
             hosts_map: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(None)),
+            publication_generation: Arc::new(AtomicU64::new(0)),
+            publication_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -348,6 +353,8 @@ impl StatsMgr {
             let stats_data = self.stats_data.clone();
             let stat_map = stat_map.clone();
             let notifier_tx = notifier_tx.clone();
+            let publication_generation = self.publication_generation.clone();
+            let publication_lock = self.publication_lock.clone();
             let mut latest_notify_ts = 0_u64;
             let mut latest_save_ts = 0_u64;
             let mut latest_alert_check_ts = 0_u64;
@@ -356,6 +363,7 @@ impl StatsMgr {
             move || loop {
                 thread::sleep(Duration::from_millis(500));
 
+                let snapshot_generation = publication_generation.load(Ordering::Acquire);
                 let mut resp = StatsResp::new();
                 let now = resp.updated;
                 let mut any_notified = false;
@@ -478,17 +486,18 @@ impl StatsMgr {
 
                 sort_servers(&mut resp.servers);
 
-                // last_network_in/out save /60s
-                if latest_save_ts + SAVE_INTERVAL < now {
+                let save_snapshot = latest_save_ts + SAVE_INTERVAL < now;
+                if publish_snapshot_if_current(
+                    snapshot_generation,
+                    &publication_generation,
+                    &publication_lock,
+                    &resp_json,
+                    &stats_data,
+                    resp,
+                    save_snapshot,
+                ) && save_snapshot
+                {
                     latest_save_ts = now;
-                    Self::save_stats_snapshot(&resp);
-                }
-                //
-                if let Ok(mut o) = resp_json.lock() {
-                    *o = serde_json::to_string(&resp).unwrap();
-                }
-                if let Ok(mut o) = stats_data.lock() {
-                    *o = resp;
                 }
             }
         });
@@ -528,6 +537,8 @@ impl StatsMgr {
         if hosts.is_empty() {
             return;
         }
+        let _publication = self.publication_lock.lock().unwrap();
+        self.publication_generation.fetch_add(1, Ordering::AcqRel);
         if let Ok(mut stat_map) = self.stat_map.lock() {
             stat_map.retain(|name, _| !hosts.contains(name));
         }
@@ -540,13 +551,18 @@ impl StatsMgr {
                 warn!("failed to save purged runtime state: {err}");
             }
         }
-        if let Ok(mut stats_data) = self.stats_data.lock() {
+        let public_json = if let Ok(mut stats_data) = self.stats_data.lock() {
             stats_data.servers.retain(|stat| !hosts.contains(&stat.name));
             let public_json = serde_json::to_string(&*stats_data).unwrap_or_else(|_| "{}".to_string());
+            Self::save_stats_snapshot(&stats_data);
+            Some(public_json)
+        } else {
+            None
+        };
+        if let Some(public_json) = public_json {
             if let Ok(mut resp_json) = self.resp_json.lock() {
                 *resp_json = public_json;
             }
-            Self::save_stats_snapshot(&stats_data);
         }
     }
 
@@ -564,6 +580,7 @@ impl StatsMgr {
     }
 
     fn rebuild_cached_response(&self) {
+        let snapshot_generation = self.publication_generation.load(Ordering::Acquire);
         let deleted_hosts = crate::admin::deleted_hosts();
         let mut resp = StatsResp::new();
         if let Ok(stat_map) = self.stat_map.lock() {
@@ -574,13 +591,19 @@ impl StatsMgr {
                 .collect();
         }
         sort_servers(&mut resp.servers);
-        let resp_json = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
-        if let Ok(mut data) = self.stats_data.lock() {
-            *data = resp;
-        }
-        if let Ok(mut json) = self.resp_json.lock() {
-            *json = resp_json;
-        }
+        self.publish_snapshot_if_current(snapshot_generation, resp);
+    }
+
+    fn publish_snapshot_if_current(&self, snapshot_generation: u64, resp: StatsResp) -> bool {
+        publish_snapshot_if_current(
+            snapshot_generation,
+            &self.publication_generation,
+            &self.publication_lock,
+            &self.resp_json,
+            &self.stats_data,
+            resp,
+            false,
+        )
     }
 
     pub fn active_host_gid(&self, name: &str) -> Option<String> {
@@ -787,6 +810,36 @@ fn mark_offline_if_stale(stat: &mut HostStat, now: u64, threshold: u64) -> bool 
 
 fn should_save_runtime_state(is_new_host: bool, latest_save_ts: u64, now: u64) -> bool {
     is_new_host || latest_save_ts.saturating_add(SAVE_INTERVAL) < now
+}
+
+fn publish_snapshot_if_current(
+    snapshot_generation: u64,
+    publication_generation: &AtomicU64,
+    publication_lock: &Mutex<()>,
+    resp_json: &Mutex<String>,
+    stats_data: &Mutex<StatsResp>,
+    resp: StatsResp,
+    save_snapshot: bool,
+) -> bool {
+    let public_json = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
+    let _publication = publication_lock.lock().unwrap();
+    if publication_generation.load(Ordering::Acquire) != snapshot_generation {
+        return false;
+    }
+    if save_snapshot {
+        StatsMgr::save_stats_snapshot(&resp);
+    }
+    if let Ok(mut data) = stats_data.lock() {
+        *data = resp;
+    } else {
+        return false;
+    }
+    if let Ok(mut json) = resp_json.lock() {
+        *json = public_json;
+        true
+    } else {
+        false
+    }
 }
 
 fn sort_servers(servers: &mut [Arc<HostStat>]) {
@@ -1226,6 +1279,51 @@ mod tests {
         assert!(!mgr.get_stats_json().contains("srv-gone"));
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn purge_prevents_stale_snapshot_from_republishing() {
+        let mgr = Arc::new(StatsMgr::new());
+        let stale_stat = Arc::new(HostStat {
+            name: "srv-gone".into(),
+            ..Default::default()
+        });
+        mgr.stat_map
+            .lock()
+            .unwrap()
+            .insert("srv-gone".into(), Arc::clone(&stale_stat));
+        mgr.hosts_map.lock().unwrap().insert(
+            "srv-gone".into(),
+            Host {
+                name: "srv-gone".into(),
+                ..Default::default()
+            },
+        );
+        mgr.stats_data.lock().unwrap().servers.push(Arc::clone(&stale_stat));
+
+        let snapshot_generation = mgr.publication_generation.load(std::sync::atomic::Ordering::Acquire);
+        let stale_snapshot = StatsResp {
+            updated: 1,
+            servers: vec![stale_stat],
+        };
+        let (snapshot_ready_tx, snapshot_ready_rx) = std::sync::mpsc::channel();
+        let (publish_tx, publish_rx) = std::sync::mpsc::channel();
+        let publisher = {
+            let mgr = Arc::clone(&mgr);
+            std::thread::spawn(move || {
+                snapshot_ready_tx.send(()).unwrap();
+                publish_rx.recv().unwrap();
+                mgr.publish_snapshot_if_current(snapshot_generation, stale_snapshot)
+            })
+        };
+
+        snapshot_ready_rx.recv().unwrap();
+        mgr.purge_hosts(&HashSet::from(["srv-gone".into()]));
+        publish_tx.send(()).unwrap();
+
+        assert!(!publisher.join().unwrap());
+        assert!(!mgr.get_stats_json().contains("srv-gone"));
+        assert!(mgr.stats_data.lock().unwrap().servers.is_empty());
     }
 
     #[test]
