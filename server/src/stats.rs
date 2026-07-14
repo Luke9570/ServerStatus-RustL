@@ -324,7 +324,7 @@ impl StatsMgr {
                             }
                             host_stat_map.insert(arc_stat.name.clone(), Arc::clone(&arc_stat));
                             runtime_state.upsert_host(KnownHost::from_stat(&arc_stat));
-                            if is_new_host || latest_runtime_save_ts + SAVE_INTERVAL < arc_stat.latest_ts {
+                            if should_save_runtime_state(is_new_host, latest_runtime_save_ts, arc_stat.latest_ts) {
                                 match runtime_state.save() {
                                     Ok(()) => latest_runtime_save_ts = arc_stat.latest_ts,
                                     Err(err) => warn!("failed to save runtime state: {err}"),
@@ -717,6 +717,7 @@ fn restore_known_hosts(
         }
         if let Some(host) = hosts_map.get_mut(&stat.name) {
             apply_override(host);
+            stat.gid = host.gid.clone();
             let saved_weight = stat.weight;
             refresh_cached_stat_from_host(&mut stat, host, saved_weight);
         }
@@ -741,6 +742,10 @@ fn mark_offline_if_stale(stat: &mut HostStat, now: u64, threshold: u64) -> bool 
         return true;
     }
     false
+}
+
+fn should_save_runtime_state(is_new_host: bool, latest_save_ts: u64, now: u64) -> bool {
+    is_new_host || latest_save_ts.saturating_add(SAVE_INTERVAL) < now
 }
 
 fn sort_servers(servers: &mut [Arc<HostStat>]) {
@@ -1306,6 +1311,50 @@ mod tests {
         assert_eq!(restored.host_type, "kvm");
         assert_eq!(restored.weight, 9_000);
         assert!(!stat_map.contains_key("deleted"));
+    }
+
+    #[test]
+    fn restored_host_uses_current_configured_group_over_persisted_group() {
+        let mut stat_map = HashMap::new();
+        let mut hosts_map = HashMap::from([(
+            "srv-group".to_string(),
+            Host {
+                name: "srv-group".to_string(),
+                gid: "current-group".to_string(),
+                notify: true,
+                ..Default::default()
+            },
+        )]);
+
+        restore_known_hosts(
+            &mut stat_map,
+            &mut hosts_map,
+            &HashMap::new(),
+            vec![KnownHost {
+                name: "srv-group".to_string(),
+                gid: "persisted-group".to_string(),
+                ..Default::default()
+            }],
+            &HashSet::new(),
+            |_| {},
+        );
+
+        assert_eq!(stat_map["srv-group"].gid, "current-group");
+    }
+
+    #[test]
+    fn runtime_state_save_is_due_immediately_for_new_host() {
+        assert!(should_save_runtime_state(true, 100, 101));
+    }
+
+    #[test]
+    fn runtime_state_save_is_not_due_for_existing_host_inside_interval() {
+        assert!(!should_save_runtime_state(false, 100, 160));
+    }
+
+    #[test]
+    fn runtime_state_save_is_due_for_existing_host_after_interval() {
+        assert!(should_save_runtime_state(false, 100, 161));
     }
 
     #[test]
