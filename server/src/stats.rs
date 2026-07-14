@@ -19,6 +19,7 @@ use crate::config::{Host, HostGroup};
 use crate::expiry;
 use crate::notifier::{Event, Notifier};
 use crate::payload::{HostStat, StatsResp};
+use crate::runtime_state::{KnownHost, RuntimeStateStore};
 
 const SAVE_INTERVAL: u64 = 60;
 const DEFAULT_GROUP_ID: &str = "default";
@@ -148,6 +149,29 @@ impl StatsMgr {
             Self::load_last_network(&mut hosts_map_guard);
         }
 
+        let runtime_state = Arc::new(RuntimeStateStore::load(
+            std::path::PathBuf::from(&cfg.workspace).join("runtime-state.json"),
+        ));
+        let known_hosts: Vec<KnownHost> = runtime_state.snapshot().hosts.into_values().collect();
+        let known_host_groups = known_hosts
+            .iter()
+            .filter_map(|host| {
+                crate::admin::effective_group(&cfg.hosts_group_map, &host.gid)
+                    .map(|group| (host.gid.clone(), group))
+            })
+            .collect();
+        if let (Ok(mut hosts_map), Ok(mut stat_map)) = (hosts_map_base.lock(), self.stat_map.lock()) {
+            restore_known_hosts(
+                &mut stat_map,
+                &mut hosts_map,
+                &known_host_groups,
+                known_hosts,
+                &crate::admin::deleted_hosts(),
+                crate::admin::apply_host_override,
+            );
+        }
+        self.rebuild_cached_response();
+
         let (stat_tx, stat_rx) = sync_channel(512);
         STAT_SENDER.set(stat_tx).unwrap();
         let (notifier_tx, notifier_rx) = sync_channel(512);
@@ -159,8 +183,11 @@ impl StatsMgr {
             let hosts_map = hosts_map_base.clone();
             let stat_map = stat_map.clone();
             let notifier_tx = notifier_tx.clone();
+            let runtime_state = runtime_state.clone();
 
-            move || loop {
+            move || {
+                let mut latest_runtime_save_ts = 0_u64;
+                loop {
                 while let Ok(mut stat) = stat_rx.recv() {
                     trace!("recv stat `{stat:?}");
 
@@ -277,6 +304,7 @@ impl StatsMgr {
                         }
 
                         if let Ok(mut host_stat_map) = stat_map.lock() {
+                            let is_new_host = !host_stat_map.contains_key(&stat_t.name);
                             let mut notify_up = false;
                             if let Some(pre_stat) = host_stat_map.get(&stat_t.name) {
                                 if stat_t.ip_info.is_none() {
@@ -294,11 +322,19 @@ impl StatsMgr {
                                 // node up notify
                                 notifier_tx.send(NotifyMessage::new(Event::NodeUp, Arc::clone(&arc_stat)));
                             }
-                            host_stat_map.insert(arc_stat.name.clone(), arc_stat);
+                            host_stat_map.insert(arc_stat.name.clone(), Arc::clone(&arc_stat));
+                            runtime_state.upsert_host(KnownHost::from_stat(&arc_stat));
+                            if is_new_host || latest_runtime_save_ts + SAVE_INTERVAL < arc_stat.latest_ts {
+                                match runtime_state.save() {
+                                    Ok(()) => latest_runtime_save_ts = arc_stat.latest_ts,
+                                    Err(err) => warn!("failed to save runtime state: {err}"),
+                                }
+                            }
                             //trace!("{:?}", host_stat_map);
                         }
                     }
                 }
+            }
             }
         });
 
@@ -306,12 +342,10 @@ impl StatsMgr {
         thread::spawn({
             let resp_json = self.resp_json.clone();
             let stats_data = self.stats_data.clone();
-            let hosts_map = hosts_map_base.clone();
             let stat_map = stat_map.clone();
             let notifier_tx = notifier_tx.clone();
             let mut latest_notify_ts = 0_u64;
             let mut latest_save_ts = 0_u64;
-            let mut latest_group_gc = 0_u64;
             let mut latest_alert_check_ts = 0_u64;
             let mut expire_notify_state: HashMap<String, String> = HashMap::new();
             let mut alert_rule_state: HashMap<String, AlertEvalState> = HashMap::new();
@@ -327,19 +361,6 @@ impl StatsMgr {
                 let deleted_hosts = crate::admin::deleted_hosts();
                 let expire_check_due = expire_notify.enabled && latest_alert_check_ts + expire_notify.interval < now;
 
-                // group gc
-                if latest_group_gc + cfg.group_gc < now {
-                    latest_group_gc = now;
-                    //
-                    if let Ok(mut hm) = hosts_map.lock() {
-                        hm.retain(|_, o| o.gid.is_empty() || o.latest_ts + cfg.group_gc >= now);
-                    }
-                    //
-                    if let Ok(mut sm) = stat_map.lock() {
-                        sm.retain(|_, o| o.gid.is_empty() || o.latest_ts + cfg.group_gc >= now);
-                    }
-                }
-
                 if let Ok(mut host_stat_map) = stat_map.lock() {
                     for (_, stat) in host_stat_map.iter_mut() {
                         if !should_publish_stat(stat, &deleted_hosts) {
@@ -352,10 +373,7 @@ impl StatsMgr {
                         let notify_event = {
                             let o = Arc::make_mut(stat);
                             // 30s 下线
-                            if o.latest_ts + cfg.offline_threshold < now {
-                                o.online4 = false;
-                                o.online6 = false;
-                            }
+                            mark_offline_if_stale(o, now, cfg.offline_threshold);
                             expiry::refresh_expire_info(&mut o.expire);
 
                             // labels
@@ -676,12 +694,53 @@ fn stat_with_custom(stat: &HostStat, custom: String) -> Arc<HostStat> {
     Arc::new(stat)
 }
 
+fn restore_known_hosts(
+    stat_map: &mut HashMap<String, Arc<HostStat>>,
+    hosts_map: &mut HashMap<String, Host>,
+    groups: &HashMap<String, HostGroup>,
+    known_hosts: impl IntoIterator<Item = KnownHost>,
+    deleted_hosts: &HashSet<String>,
+    apply_override: impl Fn(&mut Host),
+) {
+    for known_host in known_hosts {
+        if known_host.name.trim().is_empty() || deleted_hosts.contains(&known_host.name) {
+            continue;
+        }
+
+        let mut stat = known_host.into_offline_stat();
+        if !hosts_map.contains_key(&stat.name) {
+            if let Some(group) = groups.get(&stat.gid) {
+                let mut host = group.inst_host(&stat.name);
+                host.latest_ts = stat.latest_ts;
+                hosts_map.insert(stat.name.clone(), host);
+            }
+        }
+        if let Some(host) = hosts_map.get_mut(&stat.name) {
+            apply_override(host);
+            let saved_weight = stat.weight;
+            refresh_cached_stat_from_host(&mut stat, host, saved_weight);
+        }
+        stat.online4 = false;
+        stat.online6 = false;
+        stat_map.insert(stat.name.clone(), Arc::new(stat));
+    }
+}
+
 fn should_process_reported_stat(stat: &HostStat, _deleted_hosts: &HashSet<String>) -> bool {
     !stat.name.trim().is_empty()
 }
 
-fn should_publish_stat(stat: &HostStat, _deleted_hosts: &HashSet<String>) -> bool {
-    !stat.name.trim().is_empty()
+fn should_publish_stat(stat: &HostStat, deleted_hosts: &HashSet<String>) -> bool {
+    !stat.name.trim().is_empty() && !deleted_hosts.contains(&stat.name)
+}
+
+fn mark_offline_if_stale(stat: &mut HostStat, now: u64, threshold: u64) -> bool {
+    if stat.latest_ts.saturating_add(threshold) < now {
+        stat.online4 = false;
+        stat.online6 = false;
+        return true;
+    }
+    false
 }
 
 fn sort_servers(servers: &mut [Arc<HostStat>]) {
@@ -928,6 +987,7 @@ fn usage_alert_message(
 mod tests {
     use super::*;
     use crate::config::HostGroup;
+    use crate::runtime_state::KnownHost;
     use stat_common::server_status::{IpInfo, SysInfo};
 
     #[test]
@@ -1180,7 +1240,76 @@ mod tests {
     }
 
     #[test]
-    fn deleted_hosts_do_not_block_future_reports() {
+    fn stale_dynamic_host_is_marked_offline_but_remains_publishable() {
+        let mut stat = HostStat {
+            name: "pve-child".to_string(),
+            gid: "default".to_string(),
+            online4: true,
+            online6: true,
+            latest_ts: 100,
+            ..Default::default()
+        };
+
+        assert!(mark_offline_if_stale(&mut stat, 131, 30));
+        assert!(!stat.online4 && !stat.online6);
+        assert!(should_publish_stat(&stat, &HashSet::new()));
+    }
+
+    #[test]
+    fn restored_known_hosts_are_offline_filtered_and_currently_configured() {
+        let mut stat_map = HashMap::new();
+        let mut hosts_map = HashMap::new();
+        let groups = HashMap::from([(
+            "default".to_string(),
+            HostGroup {
+                gid: "default".to_string(),
+                password: "secret".to_string(),
+                location: "hk".to_string(),
+                r#type: "kvm".to_string(),
+                notify: true,
+                pos: 2,
+                weight: 9_000,
+                labels: "os=debian".to_string(),
+                expire: String::new(),
+                billing: Default::default(),
+                expire_notify: true,
+            },
+        )]);
+        let known_hosts = vec![
+            KnownHost {
+                name: "pve-child".to_string(),
+                alias: "PVE child".to_string(),
+                gid: "default".to_string(),
+                location: "old-location".to_string(),
+                host_type: "old-type".to_string(),
+                latest_ts: 100,
+                ..Default::default()
+            },
+            KnownHost {
+                name: "deleted".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        restore_known_hosts(
+            &mut stat_map,
+            &mut hosts_map,
+            &groups,
+            known_hosts,
+            &HashSet::from(["deleted".to_string()]),
+            |_| {},
+        );
+
+        let restored = stat_map.get("pve-child").unwrap();
+        assert!(!restored.online4 && !restored.online6);
+        assert_eq!(restored.location, "hk");
+        assert_eq!(restored.host_type, "kvm");
+        assert_eq!(restored.weight, 9_000);
+        assert!(!stat_map.contains_key("deleted"));
+    }
+
+    #[test]
+    fn deleted_host_is_not_published_until_authenticated_report_clears_marker() {
         let deleted_hosts = HashSet::from(["srv-return".to_string()]);
         let stat = HostStat {
             name: "srv-return".to_string(),
@@ -1188,7 +1317,7 @@ mod tests {
         };
 
         assert!(should_process_reported_stat(&stat, &deleted_hosts));
-        assert!(should_publish_stat(&stat, &deleted_hosts));
+        assert!(!should_publish_stat(&stat, &deleted_hosts));
     }
 }
 
