@@ -75,8 +75,12 @@ pub struct StatsMgr {
     stat_map: Arc<Mutex<HashMap<String, Arc<HostStat>>>>,
     hosts_map: Arc<Mutex<HashMap<String, Host>>>,
     runtime_state: Arc<Mutex<Option<Arc<RuntimeStateStore>>>>,
+    // Lock order for host removal and re-reporting is lifecycle -> publication -> live maps -> runtime/expiry state.
+    // Report handling takes lifecycle before reading deleted markers and keeps it through insertion.
+    lifecycle_lock: Arc<Mutex<()>>,
     publication_generation: Arc<AtomicU64>,
     publication_lock: Arc<Mutex<()>>,
+    expire_notify_state: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl StatsMgr {
@@ -87,8 +91,10 @@ impl StatsMgr {
             stat_map: Arc::new(Mutex::new(HashMap::new())),
             hosts_map: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(None)),
+            lifecycle_lock: Arc::new(Mutex::new(())),
             publication_generation: Arc::new(AtomicU64::new(0)),
             publication_lock: Arc::new(Mutex::new(())),
+            expire_notify_state: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -193,6 +199,7 @@ impl StatsMgr {
             let stat_map = stat_map.clone();
             let notifier_tx = notifier_tx.clone();
             let runtime_state = runtime_state.clone();
+            let lifecycle_lock = self.lifecycle_lock.clone();
 
             move || {
                 let mut latest_runtime_save_ts = 0_u64;
@@ -201,6 +208,7 @@ impl StatsMgr {
                     trace!("recv stat `{stat:?}");
 
                     let mut stat_t = stat.to_mut();
+                    let _lifecycle = lifecycle_lock.lock().unwrap();
                     let deleted_hosts = crate::admin::deleted_hosts();
                     if !should_process_reported_stat(stat_t, &deleted_hosts) {
                         continue;
@@ -356,10 +364,10 @@ impl StatsMgr {
             let notifier_tx = notifier_tx.clone();
             let publication_generation = self.publication_generation.clone();
             let publication_lock = self.publication_lock.clone();
+            let expire_notify_state = self.expire_notify_state.clone();
             let mut latest_notify_ts = 0_u64;
             let mut latest_save_ts = 0_u64;
             let mut latest_alert_check_ts = 0_u64;
-            let mut expire_notify_state: HashMap<String, String> = HashMap::new();
             let mut alert_state_dirty = false;
             move || loop {
                 thread::sleep(Duration::from_millis(500));
@@ -414,14 +422,13 @@ impl StatsMgr {
                             }
 
                             let expire_event = if expire_check_due && o.notify && o.expire_notify {
-                                if let Some(marker) = expiry::alert_marker(&o.expire, &expire_notify.days) {
-                                    let should_notify = expire_notify_state.get(&o.name) != Some(&marker);
-                                    expire_notify_state.insert(o.name.clone(), marker);
-                                    should_notify
-                                } else {
-                                    expire_notify_state.remove(&o.name);
-                                    false
-                                }
+                                expire_notify_state.lock().is_ok_and(|mut state| {
+                                    should_emit_expire_notification(
+                                        &mut state,
+                                        &o.name,
+                                        expiry::alert_marker(&o.expire, &expire_notify.days),
+                                    )
+                                })
                             } else {
                                 false
                             };
@@ -539,10 +546,33 @@ impl StatsMgr {
     }
 
     pub fn purge_hosts(&self, hosts: &HashSet<String>) {
-        self.purge_hosts_with_after_generation(hosts, || {});
+        self.with_host_lifecycle(|| self.purge_hosts_locked(hosts, || {}));
+    }
+
+    pub fn purge_hosts_transaction<T>(&self, hosts: &HashSet<String>, mutate: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.with_host_lifecycle(|| {
+            let result = mutate()?;
+            self.purge_hosts_locked(hosts, || {});
+            Ok(result)
+        })
+    }
+
+    fn with_host_lifecycle<T>(&self, action: impl FnOnce() -> T) -> T {
+        let _lifecycle = self.lifecycle_lock.lock().unwrap();
+        action()
     }
 
     fn purge_hosts_with_after_generation(&self, hosts: &HashSet<String>, after_generation: impl FnOnce()) {
+        self.with_host_lifecycle(|| self.purge_hosts_locked(hosts, after_generation));
+    }
+
+    fn purge_hosts_with_after_lifecycle(&self, hosts: &HashSet<String>, after_lifecycle: impl FnOnce()) {
+        let _lifecycle = self.lifecycle_lock.lock().unwrap();
+        after_lifecycle();
+        self.purge_hosts_locked(hosts, || {});
+    }
+
+    fn purge_hosts_locked(&self, hosts: &HashSet<String>, after_generation: impl FnOnce()) {
         if hosts.is_empty() {
             return;
         }
@@ -562,6 +592,9 @@ impl StatsMgr {
                 Ok(SaveResult::Skipped) => warn!("purged runtime state save was superseded by a newer mutation"),
                 Err(err) => warn!("failed to save purged runtime state: {err}"),
             }
+        }
+        if let Ok(mut expire_notify_state) = self.expire_notify_state.lock() {
+            expire_notify_state.retain(|name, _| !hosts.contains(name));
         }
         let public_json = if let Ok(mut stats_data) = self.stats_data.lock() {
             stats_data.servers.retain(|stat| !hosts.contains(&stat.name));
@@ -818,6 +851,21 @@ fn restore_known_hosts(
 
 fn should_process_reported_stat(stat: &HostStat, _deleted_hosts: &HashSet<String>) -> bool {
     !stat.name.trim().is_empty()
+}
+
+fn should_emit_expire_notification(
+    expire_notify_state: &mut HashMap<String, String>,
+    host: &str,
+    marker: Option<String>,
+) -> bool {
+    if let Some(marker) = marker {
+        let should_notify = expire_notify_state.get(host) != Some(&marker);
+        expire_notify_state.insert(host.to_string(), marker);
+        should_notify
+    } else {
+        expire_notify_state.remove(host);
+        false
+    }
 }
 
 fn should_publish_stat(stat: &HostStat, deleted_hosts: &HashSet<String>) -> bool {
@@ -1446,6 +1494,106 @@ mod tests {
         assert!(!mgr.hosts_map.lock().unwrap().contains_key("srv-gone"));
         assert!(!mgr.stat_map.lock().unwrap().contains_key("srv-gone"));
         assert!(mgr.stats_data.lock().unwrap().servers.is_empty());
+    }
+
+    #[test]
+    fn purge_after_report_lifecycle_completion_wins() {
+        let mgr = StatsMgr::new();
+        mgr.with_host_lifecycle(|| {
+            mgr.hosts_map.lock().unwrap().insert(
+                "srv-return".into(),
+                Host {
+                    name: "srv-return".into(),
+                    ..Default::default()
+                },
+            );
+            mgr.stat_map.lock().unwrap().insert(
+                "srv-return".into(),
+                Arc::new(HostStat {
+                    name: "srv-return".into(),
+                    ..Default::default()
+                }),
+            );
+        });
+
+        mgr.purge_hosts(&HashSet::from(["srv-return".into()]));
+
+        assert!(!mgr.hosts_map.lock().unwrap().contains_key("srv-return"));
+        assert!(!mgr.stat_map.lock().unwrap().contains_key("srv-return"));
+    }
+
+    #[test]
+    fn report_after_purge_lifecycle_completion_survives() {
+        let mgr = Arc::new(StatsMgr::new());
+        let (purge_locked_tx, purge_locked_rx) = std::sync::mpsc::channel();
+        let (continue_purge_tx, continue_purge_rx) = std::sync::mpsc::channel();
+        let (purge_done_tx, purge_done_rx) = std::sync::mpsc::channel();
+        let purge = {
+            let mgr = Arc::clone(&mgr);
+            std::thread::spawn(move || {
+                mgr.purge_hosts_with_after_lifecycle(&HashSet::from(["srv-return".into()]), || {
+                    purge_locked_tx.send(()).unwrap();
+                    continue_purge_rx.recv().unwrap();
+                });
+                purge_done_tx.send(()).unwrap();
+            })
+        };
+
+        purge_locked_rx.recv().unwrap();
+        let (report_started_tx, report_started_rx) = std::sync::mpsc::channel();
+        let (report_done_tx, report_done_rx) = std::sync::mpsc::channel();
+        let report = {
+            let mgr = Arc::clone(&mgr);
+            std::thread::spawn(move || {
+                report_started_tx.send(()).unwrap();
+                mgr.with_host_lifecycle(|| {
+                    mgr.hosts_map.lock().unwrap().insert(
+                        "srv-return".into(),
+                        Host {
+                            name: "srv-return".into(),
+                            ..Default::default()
+                        },
+                    );
+                    mgr.stat_map.lock().unwrap().insert(
+                        "srv-return".into(),
+                        Arc::new(HostStat {
+                            name: "srv-return".into(),
+                            ..Default::default()
+                        }),
+                    );
+                });
+                report_done_tx.send(()).unwrap();
+            })
+        };
+
+        report_started_rx.recv().unwrap();
+        assert!(report_done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        continue_purge_tx.send(()).unwrap();
+        purge_done_rx.recv().unwrap();
+        report_done_rx.recv().unwrap();
+        purge.join().unwrap();
+        report.join().unwrap();
+
+        assert!(mgr.hosts_map.lock().unwrap().contains_key("srv-return"));
+        assert!(mgr.stat_map.lock().unwrap().contains_key("srv-return"));
+    }
+
+    #[test]
+    fn purge_clears_expiry_notification_state_for_reused_host_id() {
+        let mgr = StatsMgr::new();
+        mgr.expire_notify_state
+            .lock()
+            .unwrap()
+            .insert("srv-return".into(), "2030-01-01".into());
+
+        mgr.purge_hosts(&HashSet::from(["srv-return".into()]));
+
+        let mut state = mgr.expire_notify_state.lock().unwrap();
+        assert!(should_emit_expire_notification(
+            &mut state,
+            "srv-return",
+            Some("2030-01-01".into()),
+        ));
     }
 
     #[test]

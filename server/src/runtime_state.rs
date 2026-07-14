@@ -177,10 +177,11 @@ impl RuntimeStateStore {
         let before_hosts = state.state.hosts.len();
         let before_alerts = state.state.alerts.len();
         state.state.hosts.retain(|name, _| !hosts.contains(name));
-        state
-            .state
-            .alerts
-            .retain(|key, _| key.split_once(':').is_none_or(|(host, _)| !hosts.contains(host)));
+        state.state.alerts.retain(|key, _| {
+            !hosts
+                .iter()
+                .any(|host| key.strip_prefix(host).is_some_and(|suffix| suffix.starts_with(':')))
+        });
         let changed = state.state.hosts.len() != before_hosts || state.state.alerts.len() != before_alerts;
         if changed {
             state.generation = state.generation.wrapping_add(1);
@@ -224,7 +225,7 @@ impl RuntimeStateStore {
         let mut state = self.inner.lock().unwrap();
         let before = state.state.alerts.len();
         state.state.alerts.retain(|key, _| {
-            key.split_once(':')
+            key.rsplit_once(':')
                 .is_some_and(|(host, rule)| active_hosts.contains(host) && active_rules.contains(rule))
         });
         let changed = state.state.alerts.len() != before;
@@ -479,6 +480,28 @@ mod tests {
         assert!(store.prune_alert_states(&HashSet::from(["offline".into()]), &HashSet::from(["pve".into()]),));
         assert_eq!(store.snapshot().alerts.len(), 1);
         assert!(store.snapshot().alerts.contains_key("pve:offline"));
+
+        remove_file_if_present(&path);
+    }
+
+    #[test]
+    fn colon_host_ids_prune_and_purge_only_the_exact_host_alerts() {
+        let path = temporary_path("runtime-colon-host-alerts.json");
+        let store = RuntimeStateStore::load(path.clone());
+        store.replace_alerts(HashMap::from([
+            ("edge:1:offline".into(), AlertState::default()),
+            ("edge:10:offline".into(), AlertState::default()),
+        ]));
+
+        assert!(!store.prune_alert_states(
+            &HashSet::from(["offline".into()]),
+            &HashSet::from(["edge:1".into(), "edge:10".into()]),
+        ));
+
+        store.purge_hosts(&HashSet::from(["edge:1".into()]));
+        let alerts = store.snapshot().alerts;
+        assert!(!alerts.contains_key("edge:1:offline"));
+        assert!(alerts.contains_key("edge:10:offline"));
 
         remove_file_if_present(&path);
     }

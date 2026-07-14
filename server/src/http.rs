@@ -392,18 +392,18 @@ fn purge_deleted_hosts(names: Vec<String>) -> Response {
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
         .collect();
-    match admin::purge_deleted_hosts(&names) {
-        Ok(data) => {
-            if let Some(stats_mgr) = G_STATS_MGR.get() {
-                stats_mgr.purge_hosts(&purge_set);
-            }
-            Json(json!({
-                "code": 0,
-                "message": "deleted hosts purged",
-                "data": data,
-            }))
-            .into_response()
-        }
+    let result = if let Some(stats_mgr) = G_STATS_MGR.get() {
+        stats_mgr.purge_hosts_transaction(&purge_set, || admin::purge_deleted_hosts(&names))
+    } else {
+        admin::purge_deleted_hosts(&names)
+    };
+    match result {
+        Ok(data) => Json(json!({
+            "code": 0,
+            "message": "deleted hosts purged",
+            "data": data,
+        }))
+        .into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
