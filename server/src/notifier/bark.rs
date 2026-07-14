@@ -1,5 +1,5 @@
 #![deny(warnings)]
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use log::{error, info};
 use minijinja::context;
 use reqwest;
@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::time::Duration;
 
-use crate::jinja::{add_template, render_template};
-use crate::notifier::{get_tag, Event, HostStat, NOTIFIER_HANDLE};
+use crate::notifier::{Event, HostStat, NOTIFIER_HANDLE};
 
 const KIND: &str = "bark";
 
@@ -100,20 +99,13 @@ pub struct Bark {
 
 impl Bark {
     pub fn new(cfg: &'static Config) -> Self {
-        let config = crate::admin::effective_bark_config(cfg);
-
-        let o = Self {
+        Self {
             config: cfg,
             http_client: reqwest::Client::new(),
-        };
-
-        refresh_templates(&config);
-
-        o
+        }
     }
 
-    fn payload(&self, body: String) -> HashMap<String, String> {
-        let config = crate::admin::effective_bark_config(self.config);
+    fn payload(config: &Config, body: String) -> HashMap<String, String> {
         let mut data = HashMap::new();
         data.insert("device_key".to_string(), config.device_key.clone());
         data.insert("title".to_string(), config.title.clone());
@@ -132,21 +124,13 @@ impl Bark {
 
         data
     }
-}
 
-impl crate::notifier::Notifier for Bark {
-    fn kind(&self) -> &'static str {
-        KIND
-    }
-
-    fn send_notify(&self, body: String) -> Result<()> {
-        let config = crate::admin::effective_bark_config(self.config);
+    fn send_with_config(&self, config: &Config, body: String) -> Result<()> {
         if !config.enabled {
             return Ok(());
         }
-        if config.device_key.trim().is_empty() {
-            error!("bark device_key is empty");
-            return Ok(());
+        if !config.is_ready() {
+            return Err(anyhow!("Bark notifier is not ready"));
         }
 
         let server = config.server.trim_end_matches('/');
@@ -156,8 +140,13 @@ impl crate::notifier::Notifier for Bark {
             format!("{server}/push")
         };
         let timeout = config.timeout.max(1);
-        let payload = self.payload(body);
-        let handle = NOTIFIER_HANDLE.lock().unwrap().as_ref().unwrap().clone();
+        let payload = Self::payload(config, body);
+        let handle = NOTIFIER_HANDLE
+            .lock()
+            .map_err(|_| anyhow!("notification runtime lock is unavailable"))?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!("notification runtime is unavailable"))?;
         let http_client = self.http_client.clone();
 
         handle.spawn(async move {
@@ -168,16 +157,23 @@ impl crate::notifier::Notifier for Bark {
                 .send()
                 .await
             {
-                Ok(resp) => {
-                    info!("bark send msg resp => {resp:?}");
-                }
-                Err(err) => {
-                    error!("bark send msg error => {err:?}");
-                }
+                Ok(resp) => info!("bark send message status => {}", resp.status()),
+                Err(_) => error!("bark send message failed"),
             }
         });
 
         Ok(())
+    }
+}
+
+impl crate::notifier::Notifier for Bark {
+    fn kind(&self) -> &'static str {
+        KIND
+    }
+
+    fn send_notify(&self, body: String) -> Result<()> {
+        let config = crate::admin::effective_bark_config(self.config);
+        self.send_with_config(&config, body)
     }
 
     fn notify(&self, e: &Event, stat: &HostStat) -> Result<()> {
@@ -185,27 +181,112 @@ impl crate::notifier::Notifier for Bark {
         if !config.enabled {
             return Ok(());
         }
-        refresh_templates(&config);
-        render_template(
-            self.kind(),
-            get_tag(e),
-            context!(host => stat, config => &config, ip_info => stat.ip_info, sys_info => stat.sys_info),
-            true,
-        )
-        .map(|content| {
-            if !content.is_empty() {
-                self.send_notify(content).unwrap_or_else(|err| {
-                    error!("bark send msg err => {err:?}");
-                });
-            }
-        })
+        if !config.is_ready() {
+            return Err(anyhow!("Bark notifier is not ready"));
+        }
+
+        let content = render_content(&config, e, stat)?;
+        if content.is_empty() {
+            return Ok(());
+        }
+        self.send_with_config(&config, content)
+    }
+
+    fn notify_test(&self) -> Result<()> {
+        let config = crate::admin::effective_bark_config(self.config);
+        self.send_with_config(&config, "❗ServerStatus test msg".to_string())
     }
 }
 
-fn refresh_templates(config: &Config) {
-    add_template(KIND, get_tag(&Event::NodeUp), config.online_tpl.clone());
-    add_template(KIND, get_tag(&Event::NodeDown), config.offline_tpl.clone());
-    add_template(KIND, get_tag(&Event::Custom), config.custom_tpl.clone());
-    add_template(KIND, get_tag(&Event::Expire), config.expire_tpl.clone());
-    add_template(KIND, get_tag(&Event::Health), config.health_tpl.clone());
+fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<String> {
+    let source = match event {
+        Event::NodeUp => &config.online_tpl,
+        Event::NodeDown => &config.offline_tpl,
+        Event::Custom => &config.custom_tpl,
+        Event::Expire => &config.expire_tpl,
+        Event::Health => &config.health_tpl,
+    };
+    let mut environment = minijinja::Environment::new();
+    environment
+        .add_template("bark", source)
+        .map_err(|_| anyhow!("invalid Bark template"))?;
+    let rendered = environment
+        .get_template("bark")
+        .map_err(|_| anyhow!("invalid Bark template"))?
+        .render(
+            context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info),
+        )
+        .map_err(|_| anyhow!("failed to render Bark template"))?;
+    Ok(rendered
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_malformed_bark_constructor_does_not_panic() {
+        let config = Box::leak(Box::new(Config {
+            enabled: false,
+            online_tpl: "{{ sentinel-template-secret".into(),
+            ..Default::default()
+        }));
+
+        let notifier = Bark::new(config);
+
+        assert_eq!(crate::notifier::Notifier::kind(&notifier), "bark");
+    }
+
+    #[test]
+    fn enabled_malformed_bark_template_returns_redacted_error() {
+        let config = Box::leak(Box::new(Config {
+            enabled: true,
+            server: "https://api.day.app".into(),
+            device_key: "sentinel-device-secret".into(),
+            online_tpl: "{{ sentinel-template-secret".into(),
+            ..Default::default()
+        }));
+        let notifier = Bark::new(config);
+
+        let error = crate::notifier::Notifier::notify(
+            &notifier,
+            &Event::NodeUp,
+            &HostStat::default(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(error, "invalid Bark template");
+        assert!(!error.contains("sentinel-template-secret"));
+        assert!(!error.contains("sentinel-device-secret"));
+    }
+
+    #[test]
+    fn bark_rendering_selects_each_current_event_template() {
+        let config = Config {
+            title: "current".into(),
+            online_tpl: "online {{ config.title }}".into(),
+            offline_tpl: "offline {{ config.title }}".into(),
+            custom_tpl: "custom {{ config.title }}".into(),
+            expire_tpl: "expire {{ config.title }}".into(),
+            health_tpl: "health {{ config.title }}".into(),
+            ..Default::default()
+        };
+        let stat = HostStat::default();
+
+        for (event, expected) in [
+            (Event::NodeUp, "online current"),
+            (Event::NodeDown, "offline current"),
+            (Event::Custom, "custom current"),
+            (Event::Expire, "expire current"),
+            (Event::Health, "health current"),
+        ] {
+            assert_eq!(render_content(&config, &event, &stat).unwrap(), expected);
+        }
+    }
 }

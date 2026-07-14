@@ -238,6 +238,10 @@ mod tests {
     #[test]
     fn registers_all_six_with_disabled_malformed_legacy_configs() {
         let mut config: config::Config = toml::from_str("").unwrap();
+        config.tgbot.enabled = false;
+        config.tgbot.online_tpl = "{{ invalid telegram".into();
+        config.bark.enabled = false;
+        config.bark.online_tpl = "{{ invalid bark".into();
         config.wechat.enabled = false;
         config.wechat.online_tpl = "{{ invalid".into();
         config.webhook.enabled = false;
