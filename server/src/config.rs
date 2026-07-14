@@ -269,6 +269,41 @@ impl Config {
                 "expire_tpl": self.bark.expire_tpl,
                 "health_tpl": self.bark.health_tpl,
             },
+            "wechat": {
+                "enabled": self.wechat.enabled,
+                "corp_id": self.wechat.corp_id,
+                "corp_secret": "",
+                "corp_secret_configured": is_configured_secret(&self.wechat.corp_secret),
+                "agent_id": self.wechat.agent_id,
+                "title": self.wechat.title,
+                "online_tpl": self.wechat.online_tpl,
+                "offline_tpl": self.wechat.offline_tpl,
+                "expire_tpl": self.wechat.expire_tpl,
+                "health_tpl": self.wechat.health_tpl,
+            },
+            "email": {
+                "enabled": self.email.enabled,
+                "server": self.email.server,
+                "username": self.email.username,
+                "password": "",
+                "password_configured": is_configured_secret(&self.email.password),
+                "to": self.email.to,
+                "subject": self.email.subject,
+                "title": self.email.title,
+                "online_tpl": self.email.online_tpl,
+                "offline_tpl": self.email.offline_tpl,
+                "expire_tpl": self.email.expire_tpl,
+                "health_tpl": self.email.health_tpl,
+            },
+            "webhook": {
+                "enabled": self.webhook.enabled,
+                "legacy_configured": self.webhook.is_ready(),
+            },
+            "log": {
+                "enabled": self.log.enabled,
+                "tpl": self.log.tpl,
+            },
+            "configured_notification_methods": crate::admin::configured_notification_methods(self),
         })
     }
 
@@ -422,13 +457,61 @@ fn should_print_generated_admin_pass(generated_admin_pass: bool, admin_override_
 
 #[cfg(test)]
 mod tests {
-    use super::should_print_generated_admin_pass;
+    use super::{should_print_generated_admin_pass, Config};
+    use std::collections::HashMap;
 
     #[test]
     fn generated_admin_password_is_hidden_when_override_exists() {
         assert!(should_print_generated_admin_pass(true, false));
         assert!(!should_print_generated_admin_pass(true, true));
         assert!(!should_print_generated_admin_pass(false, false));
+    }
+
+    #[test]
+    fn admin_config_json_masks_inherited_notification_secrets() {
+        let mut config: Config = toml::from_str("").unwrap();
+        config.wechat.enabled = true;
+        config.wechat.corp_id = "visible-corp".into();
+        config.wechat.corp_secret = "wechat-secret".into();
+        config.wechat.agent_id = "visible-agent".into();
+        config.email.enabled = true;
+        config.email.server = "smtp.example.com".into();
+        config.email.username = "visible@example.com".into();
+        config.email.password = "smtp-secret".into();
+        config.email.to = "ops@example.com".into();
+        config.webhook.enabled = true;
+        config.webhook.receiver.push(crate::notifier::webhook::Receiver {
+            enabled: true,
+            url: "https://hooks.example/private".into(),
+            headers: HashMap::from([("Authorization".into(), "Bearer secret".into())]),
+            username: Some("visible-user".into()),
+            password: Some("basic-secret".into()),
+            timeout: 5,
+            script: "[true, #{}]".into(),
+        });
+        config.log.enabled = true;
+        config.log.log_dir = "/private/log/path".into();
+        config.log.tpl = "{{ event }}".into();
+
+        let public = config.to_admin_json_value();
+        let json = serde_json::to_string(&public).unwrap();
+
+        for secret in [
+            "wechat-secret",
+            "smtp-secret",
+            "hooks.example/private",
+            "basic-secret",
+            "Bearer secret",
+            "/private/log/path",
+        ] {
+            assert!(!json.contains(secret));
+        }
+        assert_eq!(public["wechat"]["corp_id"], "visible-corp");
+        assert_eq!(public["wechat"]["corp_secret_configured"], true);
+        assert_eq!(public["email"]["username"], "visible@example.com");
+        assert_eq!(public["email"]["password_configured"], true);
+        assert_eq!(public["webhook"]["legacy_configured"], true);
+        assert_eq!(public["log"]["tpl"], "{{ event }}");
     }
 }
 

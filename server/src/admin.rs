@@ -1,5 +1,8 @@
 use anyhow::Result;
+use lettre::Address;
+use minijinja::Environment;
 use once_cell::sync::OnceCell;
+use reqwest::header::{HeaderName, HeaderValue};
 use ring::rand::SecureRandom;
 use ring::{digest, pbkdf2, rand};
 use serde::{Deserialize, Serialize};
@@ -13,7 +16,7 @@ use std::sync::Mutex;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-use crate::config::{Host, HostGroup};
+use crate::config::{Config, Host, HostGroup};
 use crate::expiry::{BillingConfig, ExpireNotifyConfig};
 use crate::notifier;
 
@@ -27,6 +30,7 @@ const MIN_ADMIN_PASSWORD_LEN: usize = 12;
 const MAX_ADMIN_PASSWORD_LEN: usize = 256;
 const MAX_ADMIN_USERNAME_LEN: usize = 64;
 pub const DEFAULT_ADMIN_PATH: &str = "/admin";
+pub const ADMIN_NOTIFICATION_LOG_DIR: &str = "notifications";
 const MAX_ADMIN_PATH_LEN: usize = 64;
 pub const INSTALL_TOKEN_TTL_SECONDS: u64 = 15 * 60;
 
@@ -241,6 +245,144 @@ pub struct BarkOverride {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WechatOverride {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub corp_id: String,
+    #[serde(default)]
+    pub corp_secret: String,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub clear_corp_secret: bool,
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
+    pub corp_secret_configured: bool,
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub online_tpl: String,
+    #[serde(default)]
+    pub offline_tpl: String,
+    #[serde(default)]
+    pub expire_tpl: String,
+    #[serde(default)]
+    pub health_tpl: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EmailOverride {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub server: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub clear_password: bool,
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
+    pub password_configured: bool,
+    #[serde(default)]
+    pub to: String,
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub online_tpl: String,
+    #[serde(default)]
+    pub offline_tpl: String,
+    #[serde(default)]
+    pub expire_tpl: String,
+    #[serde(default)]
+    pub health_tpl: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebhookHeaderOverride {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub clear_value: bool,
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
+    pub value_configured: bool,
+}
+
+fn default_webhook_timeout() -> u32 {
+    5
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuredWebhookReceiver {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub clear_url: bool,
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
+    pub url_configured: bool,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub clear_password: bool,
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false_bool")]
+    pub password_configured: bool,
+    #[serde(default = "default_webhook_timeout")]
+    pub timeout: u32,
+    #[serde(default)]
+    pub headers: Vec<WebhookHeaderOverride>,
+    #[serde(default)]
+    pub body_tpl: String,
+}
+
+impl Default for StructuredWebhookReceiver {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            enabled: false,
+            url: String::new(),
+            clear_url: false,
+            url_configured: false,
+            username: String::new(),
+            password: String::new(),
+            clear_password: false,
+            password_configured: false,
+            timeout: default_webhook_timeout(),
+            headers: Vec::new(),
+            body_tpl: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StructuredWebhookOverride {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub receivers: Vec<StructuredWebhookReceiver>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LogOverride {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub tpl: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AdminData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_user: Option<String>,
@@ -278,6 +420,14 @@ pub struct AdminData {
     pub tgbot: Option<TgbotOverride>,
     #[serde(default)]
     pub bark: Option<BarkOverride>,
+    #[serde(default)]
+    pub wechat: Option<WechatOverride>,
+    #[serde(default)]
+    pub email: Option<EmailOverride>,
+    #[serde(default)]
+    pub webhook: Option<StructuredWebhookOverride>,
+    #[serde(default)]
+    pub log: Option<LogOverride>,
 }
 
 pub fn init() -> Result<()> {
@@ -311,13 +461,18 @@ pub fn replace(data: AdminData) -> Result<AdminData> {
         .ok()
         .map(|current| current.clone())
         .unwrap_or_default();
-    let mut data = data;
-    merge_sensitive_fields(&mut data, &current);
+    let data = prepare_replacement(data, &current)?;
+    write_data(state, data)
+}
+
+fn prepare_replacement(mut data: AdminData, current: &AdminData) -> Result<AdminData> {
+    merge_sensitive_fields(&mut data, current);
     normalize_admin_data(&mut data);
     validate_admin_path(&data.admin_path).map_err(|err| anyhow::anyhow!("{err}"))?;
+    validate_admin_data(&data)?;
     data.access_base_url = data.access_base_url.trim().trim_end_matches('/').to_string();
     data.agent_base_url = data.agent_base_url.trim().trim_end_matches('/').to_string();
-    write_data(state, data)
+    Ok(data)
 }
 
 fn write_data(state: &AdminState, data: AdminData) -> Result<AdminData> {
@@ -346,7 +501,11 @@ fn write_settings_file(path: &str, contents: &str) -> Result<()> {
 }
 
 pub fn public_snapshot() -> AdminData {
-    let mut data = snapshot();
+    public_admin_data(&snapshot())
+}
+
+fn public_admin_data(data: &AdminData) -> AdminData {
+    let mut data = data.clone();
     if validate_admin_path(&data.admin_path).is_err() {
         data.admin_path = DEFAULT_ADMIN_PATH.to_string();
     }
@@ -364,6 +523,26 @@ pub fn public_snapshot() -> AdminData {
     if let Some(bark) = &mut data.bark {
         bark.device_key_configured = !bark.clear_device_key && is_configured_secret(&bark.device_key);
         bark.device_key.clear();
+    }
+    if let Some(wechat) = &mut data.wechat {
+        wechat.corp_secret_configured = !wechat.clear_corp_secret && is_configured_secret(&wechat.corp_secret);
+        wechat.corp_secret.clear();
+    }
+    if let Some(email) = &mut data.email {
+        email.password_configured = !email.clear_password && is_configured_secret(&email.password);
+        email.password.clear();
+    }
+    if let Some(webhook) = &mut data.webhook {
+        for receiver in &mut webhook.receivers {
+            receiver.url_configured = !receiver.clear_url && is_configured_secret(&receiver.url);
+            receiver.url.clear();
+            receiver.password_configured = !receiver.clear_password && is_configured_secret(&receiver.password);
+            receiver.password.clear();
+            for header in &mut receiver.headers {
+                header.value_configured = !header.clear_value && is_configured_secret(&header.value);
+                header.value.clear();
+            }
+        }
     }
     data.install_tokens.clear();
     data
@@ -673,43 +852,268 @@ pub fn effective_expire_notify(base: &ExpireNotifyConfig) -> ExpireNotifyConfig 
 }
 
 pub fn effective_tgbot_config(base: &notifier::tgbot::Config) -> notifier::tgbot::Config {
-    let mut cfg = base.clone();
-    if let Some(override_data) = snapshot().tgbot {
+    effective_tgbot_config_from_data(&snapshot(), base)
+}
+
+pub fn effective_bark_config(base: &notifier::bark::Config) -> notifier::bark::Config {
+    effective_bark_config_from_data(&snapshot(), base)
+}
+
+pub fn effective_wechat_config(base: &notifier::wechat::Config) -> notifier::wechat::Config {
+    effective_wechat_config_from_data(&snapshot(), base)
+}
+
+fn effective_wechat_config_from_data(data: &AdminData, base: &notifier::wechat::Config) -> notifier::wechat::Config {
+    let mut cfg = clone_wechat_config(base);
+    if let Some(override_data) = &data.wechat {
         cfg.enabled = override_data.enabled;
-        if override_data.clear_bot_token {
-            cfg.bot_token.clear();
+        override_string(&mut cfg.corp_id, override_data.corp_id.clone());
+        if override_data.clear_corp_secret {
+            cfg.corp_secret.clear();
         } else {
-            override_string(&mut cfg.bot_token, override_data.bot_token);
+            override_string(&mut cfg.corp_secret, override_data.corp_secret.clone());
         }
-        if override_data.clear_chat_id {
-            cfg.chat_id.clear();
-        } else {
-            override_string(&mut cfg.chat_id, override_data.chat_id);
-        }
-        override_string(&mut cfg.title, override_data.title);
-        override_string(&mut cfg.expire_tpl, override_data.expire_tpl);
-        override_string(&mut cfg.health_tpl, override_data.health_tpl);
+        override_string(&mut cfg.agent_id, override_data.agent_id.clone());
+        override_string(&mut cfg.title, override_data.title.clone());
+        override_string(&mut cfg.online_tpl, override_data.online_tpl.clone());
+        override_string(&mut cfg.offline_tpl, override_data.offline_tpl.clone());
+        override_string(&mut cfg.expire_tpl, override_data.expire_tpl.clone());
+        override_string(&mut cfg.health_tpl, override_data.health_tpl.clone());
     }
     cfg
 }
 
-pub fn effective_bark_config(base: &notifier::bark::Config) -> notifier::bark::Config {
-    let mut cfg = base.clone();
-    if let Some(override_data) = snapshot().bark {
+fn clone_wechat_config(base: &notifier::wechat::Config) -> notifier::wechat::Config {
+    notifier::wechat::Config {
+        enabled: base.enabled,
+        corp_id: base.corp_id.clone(),
+        corp_secret: base.corp_secret.clone(),
+        agent_id: base.agent_id.clone(),
+        title: base.title.clone(),
+        online_tpl: base.online_tpl.clone(),
+        offline_tpl: base.offline_tpl.clone(),
+        custom_tpl: base.custom_tpl.clone(),
+        expire_tpl: base.expire_tpl.clone(),
+        health_tpl: base.health_tpl.clone(),
+    }
+}
+
+pub fn effective_email_config(base: &notifier::email::Config) -> notifier::email::Config {
+    effective_email_config_from_data(&snapshot(), base)
+}
+
+fn effective_email_config_from_data(data: &AdminData, base: &notifier::email::Config) -> notifier::email::Config {
+    let mut cfg = clone_email_config(base);
+    if let Some(override_data) = &data.email {
         cfg.enabled = override_data.enabled;
-        override_string(&mut cfg.server, override_data.server);
+        override_string(&mut cfg.server, override_data.server.clone());
+        override_string(&mut cfg.username, override_data.username.clone());
+        if override_data.clear_password {
+            cfg.password.clear();
+        } else {
+            override_string(&mut cfg.password, override_data.password.clone());
+        }
+        override_string(&mut cfg.to, override_data.to.clone());
+        override_string(&mut cfg.subject, override_data.subject.clone());
+        override_string(&mut cfg.title, override_data.title.clone());
+        override_string(&mut cfg.online_tpl, override_data.online_tpl.clone());
+        override_string(&mut cfg.offline_tpl, override_data.offline_tpl.clone());
+        override_string(&mut cfg.expire_tpl, override_data.expire_tpl.clone());
+        override_string(&mut cfg.health_tpl, override_data.health_tpl.clone());
+    }
+    cfg
+}
+
+fn clone_email_config(base: &notifier::email::Config) -> notifier::email::Config {
+    notifier::email::Config {
+        enabled: base.enabled,
+        server: base.server.clone(),
+        username: base.username.clone(),
+        password: base.password.clone(),
+        to: base.to.clone(),
+        subject: base.subject.clone(),
+        title: base.title.clone(),
+        online_tpl: base.online_tpl.clone(),
+        offline_tpl: base.offline_tpl.clone(),
+        custom_tpl: base.custom_tpl.clone(),
+        expire_tpl: base.expire_tpl.clone(),
+        health_tpl: base.health_tpl.clone(),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum EffectiveWebhookConfig {
+    Legacy(notifier::webhook::Config),
+    Structured(StructuredWebhookOverride),
+}
+
+impl EffectiveWebhookConfig {
+    pub fn is_ready(&self) -> bool {
+        match self {
+            Self::Legacy(config) => config.is_ready(),
+            Self::Structured(config) => config.is_ready(),
+        }
+    }
+}
+
+pub fn effective_webhook_override(base: &notifier::webhook::Config) -> EffectiveWebhookConfig {
+    effective_webhook_override_from_data(&snapshot(), base)
+}
+
+fn effective_webhook_override_from_data(data: &AdminData, base: &notifier::webhook::Config) -> EffectiveWebhookConfig {
+    data.webhook.as_ref().map_or_else(
+        || EffectiveWebhookConfig::Legacy(base.clone()),
+        |config| EffectiveWebhookConfig::Structured(config.clone()),
+    )
+}
+
+pub fn effective_log_config(base: &notifier::log::Config) -> notifier::log::Config {
+    effective_log_config_from_data(&snapshot(), base)
+}
+
+fn effective_log_config_from_data(data: &AdminData, base: &notifier::log::Config) -> notifier::log::Config {
+    let mut cfg = notifier::log::Config {
+        enabled: base.enabled,
+        log_dir: base.log_dir.clone(),
+        tpl: base.tpl.clone(),
+    };
+    if let Some(override_data) = &data.log {
+        cfg.enabled = override_data.enabled;
+        cfg.log_dir = ADMIN_NOTIFICATION_LOG_DIR.to_string();
+        override_string(&mut cfg.tpl, override_data.tpl.clone());
+    }
+    cfg
+}
+
+impl notifier::tgbot::Config {
+    pub fn is_ready(&self) -> bool {
+        self.enabled && is_configured_secret(&self.bot_token) && is_configured_secret(&self.chat_id)
+    }
+}
+
+impl notifier::bark::Config {
+    pub fn is_ready(&self) -> bool {
+        self.enabled && (is_configured_secret(&self.device_key) || split_bark_server_and_key(&self.server).is_some())
+    }
+}
+
+impl notifier::wechat::Config {
+    pub fn is_ready(&self) -> bool {
+        self.enabled
+            && is_configured_secret(&self.corp_id)
+            && is_configured_secret(&self.corp_secret)
+            && is_configured_secret(&self.agent_id)
+    }
+}
+
+impl notifier::email::Config {
+    pub fn is_ready(&self) -> bool {
+        self.enabled
+            && valid_smtp_relay(&self.server)
+            && valid_email_address(&self.username)
+            && is_configured_secret(&self.password)
+            && valid_email_recipients(&self.to)
+    }
+}
+
+impl notifier::webhook::Config {
+    pub fn is_ready(&self) -> bool {
+        self.enabled
+            && self.receiver.iter().any(|receiver| {
+                receiver.enabled
+                    && !receiver.url.trim().is_empty()
+                    && (1..=60).contains(&receiver.timeout)
+                    && !receiver.script.trim().is_empty()
+            })
+    }
+}
+
+impl StructuredWebhookOverride {
+    pub fn is_ready(&self) -> bool {
+        self.enabled && self.receivers.iter().any(StructuredWebhookReceiver::is_ready)
+    }
+}
+
+impl StructuredWebhookReceiver {
+    pub fn is_ready(&self) -> bool {
+        self.enabled
+            && is_configured_secret(&self.url)
+            && (1..=60).contains(&self.timeout)
+            && !self.body_tpl.trim().is_empty()
+    }
+}
+
+impl notifier::log::Config {
+    pub fn is_ready(&self) -> bool {
+        self.enabled && !self.log_dir.trim().is_empty() && !self.tpl.trim().is_empty()
+    }
+}
+
+pub fn configured_notification_methods(cfg: &Config) -> Vec<String> {
+    configured_notification_methods_from_data(&snapshot(), cfg)
+}
+
+fn configured_notification_methods_from_data(data: &AdminData, cfg: &Config) -> Vec<String> {
+    let mut methods = Vec::new();
+    if effective_tgbot_config_from_data(data, &cfg.tgbot).is_ready() {
+        methods.push("tg".to_string());
+    }
+    if effective_bark_config_from_data(data, &cfg.bark).is_ready() {
+        methods.push("bark".to_string());
+    }
+    if effective_wechat_config_from_data(data, &cfg.wechat).is_ready() {
+        methods.push("wechat".to_string());
+    }
+    if effective_email_config_from_data(data, &cfg.email).is_ready() {
+        methods.push("email".to_string());
+    }
+    if effective_webhook_override_from_data(data, &cfg.webhook).is_ready() {
+        methods.push("webhook".to_string());
+    }
+    if effective_log_config_from_data(data, &cfg.log).is_ready() {
+        methods.push("log".to_string());
+    }
+    methods
+}
+
+fn effective_tgbot_config_from_data(data: &AdminData, base: &notifier::tgbot::Config) -> notifier::tgbot::Config {
+    let mut cfg = base.clone();
+    if let Some(override_data) = &data.tgbot {
+        cfg.enabled = override_data.enabled;
+        if override_data.clear_bot_token {
+            cfg.bot_token.clear();
+        } else {
+            override_string(&mut cfg.bot_token, override_data.bot_token.clone());
+        }
+        if override_data.clear_chat_id {
+            cfg.chat_id.clear();
+        } else {
+            override_string(&mut cfg.chat_id, override_data.chat_id.clone());
+        }
+        override_string(&mut cfg.title, override_data.title.clone());
+        override_string(&mut cfg.expire_tpl, override_data.expire_tpl.clone());
+        override_string(&mut cfg.health_tpl, override_data.health_tpl.clone());
+    }
+    cfg
+}
+
+fn effective_bark_config_from_data(data: &AdminData, base: &notifier::bark::Config) -> notifier::bark::Config {
+    let mut cfg = base.clone();
+    if let Some(override_data) = &data.bark {
+        cfg.enabled = override_data.enabled;
+        override_string(&mut cfg.server, override_data.server.clone());
         if override_data.clear_device_key {
             cfg.device_key.clear();
         } else {
-            override_string(&mut cfg.device_key, override_data.device_key);
+            override_string(&mut cfg.device_key, override_data.device_key.clone());
         }
-        override_string(&mut cfg.title, override_data.title);
-        override_string(&mut cfg.group, override_data.group);
-        override_string(&mut cfg.icon, override_data.icon);
-        override_string(&mut cfg.sound, override_data.sound);
-        override_string(&mut cfg.url, override_data.url);
-        override_string(&mut cfg.expire_tpl, override_data.expire_tpl);
-        override_string(&mut cfg.health_tpl, override_data.health_tpl);
+        override_string(&mut cfg.title, override_data.title.clone());
+        override_string(&mut cfg.group, override_data.group.clone());
+        override_string(&mut cfg.icon, override_data.icon.clone());
+        override_string(&mut cfg.sound, override_data.sound.clone());
+        override_string(&mut cfg.url, override_data.url.clone());
+        override_string(&mut cfg.expire_tpl, override_data.expire_tpl.clone());
+        override_string(&mut cfg.health_tpl, override_data.health_tpl.clone());
         if let Some(timeout) = override_data.timeout {
             cfg.timeout = timeout;
         }
@@ -951,6 +1355,21 @@ fn merge_sensitive_fields(data: &mut AdminData, current: &AdminData) {
             next.clear_device_key = prev.clear_device_key;
         }
     }
+    if let (Some(next), Some(prev)) = (&mut data.wechat, &current.wechat) {
+        if !next.clear_corp_secret && (next.corp_secret.trim().is_empty() || is_secret_mask(&next.corp_secret)) {
+            next.corp_secret.clone_from(&prev.corp_secret);
+            next.clear_corp_secret = prev.clear_corp_secret;
+        }
+    }
+    if let (Some(next), Some(prev)) = (&mut data.email, &current.email) {
+        if !next.clear_password && (next.password.trim().is_empty() || is_secret_mask(&next.password)) {
+            next.password.clone_from(&prev.password);
+            next.clear_password = prev.clear_password;
+        }
+    }
+    if let (Some(next), Some(prev)) = (&mut data.webhook, &current.webhook) {
+        merge_webhook_secrets(next, prev);
+    }
     for (gid, access_key) in &mut data.access_keys {
         if access_key.password.trim().is_empty() {
             if let Some(prev) = current.access_keys.get(gid) {
@@ -972,6 +1391,15 @@ fn normalize_admin_data(data: &mut AdminData) {
     }
     if let Some(bark) = &mut data.bark {
         normalize_bark_override(bark);
+    }
+    if let Some(wechat) = &mut data.wechat {
+        normalize_wechat_override(wechat);
+    }
+    if let Some(email) = &mut data.email {
+        normalize_email_override(email);
+    }
+    if let Some(webhook) = &mut data.webhook {
+        normalize_webhook_override(webhook);
     }
     for override_data in data.hosts.values_mut() {
         override_data.normalize();
@@ -1071,6 +1499,248 @@ pub(crate) fn normalize_tgbot_override(config: &mut TgbotOverride) {
     if config.clear_chat_id {
         config.chat_id.clear();
     }
+}
+
+fn merge_webhook_secrets(next: &mut StructuredWebhookOverride, previous: &StructuredWebhookOverride) {
+    for receiver in &mut next.receivers {
+        let Some(previous_receiver) = previous.receivers.iter().find(|candidate| candidate.id == receiver.id) else {
+            continue;
+        };
+        if !receiver.clear_url && (receiver.url.trim().is_empty() || is_secret_mask(&receiver.url)) {
+            receiver.url.clone_from(&previous_receiver.url);
+            receiver.clear_url = previous_receiver.clear_url;
+        }
+        if !receiver.clear_password && (receiver.password.trim().is_empty() || is_secret_mask(&receiver.password)) {
+            receiver.password.clone_from(&previous_receiver.password);
+            receiver.clear_password = previous_receiver.clear_password;
+        }
+        for header in &mut receiver.headers {
+            let Some(previous_header) = previous_receiver
+                .headers
+                .iter()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(header.name.trim()))
+            else {
+                continue;
+            };
+            if !header.clear_value && (header.value.trim().is_empty() || is_secret_mask(&header.value)) {
+                header.value.clone_from(&previous_header.value);
+                header.clear_value = previous_header.clear_value;
+            }
+        }
+    }
+}
+
+fn normalize_wechat_override(config: &mut WechatOverride) {
+    config.corp_id = config.corp_id.trim().to_string();
+    config.corp_secret = config.corp_secret.trim().to_string();
+    config.agent_id = config.agent_id.trim().to_string();
+    config.title = config.title.trim().to_string();
+    normalize_secret(&mut config.corp_secret, &mut config.clear_corp_secret);
+}
+
+fn normalize_email_override(config: &mut EmailOverride) {
+    config.server = config.server.trim().to_string();
+    config.username = config.username.trim().to_string();
+    config.password = config.password.trim().to_string();
+    config.to = config.to.trim().to_string();
+    config.subject = config.subject.trim().to_string();
+    config.title = config.title.trim().to_string();
+    normalize_secret(&mut config.password, &mut config.clear_password);
+}
+
+fn normalize_webhook_override(config: &mut StructuredWebhookOverride) {
+    for receiver in &mut config.receivers {
+        receiver.id = receiver.id.trim().to_string();
+        receiver.name = receiver.name.trim().to_string();
+        receiver.url = receiver.url.trim().to_string();
+        receiver.username = receiver.username.trim().to_string();
+        receiver.password = receiver.password.trim().to_string();
+        normalize_secret(&mut receiver.url, &mut receiver.clear_url);
+        normalize_secret(&mut receiver.password, &mut receiver.clear_password);
+        for header in &mut receiver.headers {
+            header.name = header.name.trim().to_string();
+            header.value = header.value.trim().to_string();
+            normalize_secret(&mut header.value, &mut header.clear_value);
+        }
+    }
+}
+
+fn normalize_secret(value: &mut String, clear: &mut bool) {
+    if *clear {
+        value.clear();
+        return;
+    }
+    if is_secret_mask(value) {
+        value.clear();
+    }
+    if !value.is_empty() {
+        *clear = false;
+    }
+}
+
+fn validate_admin_data(data: &AdminData) -> Result<()> {
+    if let Some(wechat) = &data.wechat {
+        for template in [
+            &wechat.online_tpl,
+            &wechat.offline_tpl,
+            &wechat.expire_tpl,
+            &wechat.health_tpl,
+        ] {
+            validate_minijinja_template(template, "WeChat")?;
+        }
+    }
+    if let Some(email) = &data.email {
+        validate_email_override(email)?;
+    }
+    if let Some(webhook) = &data.webhook {
+        validate_structured_webhook(webhook)?;
+    }
+    if let Some(log) = &data.log {
+        validate_log_override(log)?;
+    }
+    Ok(())
+}
+
+fn validate_email_override(config: &EmailOverride) -> Result<()> {
+    if !config.server.is_empty() && !valid_smtp_relay(&config.server) {
+        anyhow::bail!("Email SMTP relay is invalid");
+    }
+    if !config.username.is_empty() && !valid_email_address(&config.username) {
+        anyhow::bail!("Email username is not a valid address");
+    }
+    if !config.to.is_empty() && !valid_email_recipients(&config.to) {
+        anyhow::bail!("Email recipients are invalid");
+    }
+    for template in [
+        &config.online_tpl,
+        &config.offline_tpl,
+        &config.expire_tpl,
+        &config.health_tpl,
+    ] {
+        validate_minijinja_template(template, "Email")?;
+    }
+    Ok(())
+}
+
+fn validate_structured_webhook(config: &StructuredWebhookOverride) -> Result<()> {
+    let mut receiver_ids = HashSet::new();
+    for receiver in &config.receivers {
+        if !is_stable_id(&receiver.id) {
+            anyhow::bail!("Webhook receiver ID is invalid");
+        }
+        if !receiver_ids.insert(receiver.id.as_str()) {
+            anyhow::bail!("Webhook receiver IDs must be unique");
+        }
+        if receiver.name.is_empty() {
+            anyhow::bail!("Webhook receiver name is required");
+        }
+        if !(1..=60).contains(&receiver.timeout) {
+            anyhow::bail!("Webhook timeout must be between 1 and 60 seconds");
+        }
+        if !receiver.url.is_empty() {
+            validate_http_url(&receiver.url)?;
+        } else if receiver.enabled {
+            anyhow::bail!("Enabled Webhook receiver URL is required");
+        }
+        if !receiver.body_tpl.is_empty() {
+            validate_minijinja_template(&receiver.body_tpl, "Webhook")?;
+        } else if receiver.enabled {
+            anyhow::bail!("Enabled Webhook receiver template is required");
+        }
+
+        let mut header_names = HashSet::new();
+        for header in &receiver.headers {
+            let normalized_name = header.name.to_ascii_lowercase();
+            if normalized_name.is_empty() || !header_names.insert(normalized_name) {
+                anyhow::bail!("Webhook header names must be non-empty and unique");
+            }
+            header
+                .name
+                .parse::<HeaderName>()
+                .map_err(|_| anyhow::anyhow!("Webhook header name is invalid"))?;
+            if !header.value.is_empty() {
+                HeaderValue::from_str(&header.value).map_err(|_| anyhow::anyhow!("Webhook header value is invalid"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_http_url(value: &str) -> Result<()> {
+    let parsed = url::Url::parse(value).map_err(|_| anyhow::anyhow!("Webhook URL is invalid"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        anyhow::bail!("Webhook URL must use http or https");
+    }
+    Ok(())
+}
+
+fn validate_log_override(config: &LogOverride) -> Result<()> {
+    if config.enabled && config.tpl.trim().is_empty() {
+        anyhow::bail!("Log template is required when enabled");
+    }
+    validate_minijinja_template(&config.tpl, "Log")?;
+    if template_uses_loader(&config.tpl) {
+        anyhow::bail!("Log template cannot load external templates");
+    }
+    Ok(())
+}
+
+fn valid_smtp_relay(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && url::Host::parse(value).is_ok()
+}
+
+fn valid_email_address(value: &str) -> bool {
+    value.trim().parse::<Address>().is_ok()
+}
+
+fn valid_email_recipients(value: &str) -> bool {
+    let mut recipients = value
+        .split([';', ','])
+        .map(str::trim)
+        .filter(|recipient| !recipient.is_empty())
+        .peekable();
+    recipients.peek().is_some() && recipients.all(valid_email_address)
+}
+
+fn template_uses_loader(template: &str) -> bool {
+    let mut remaining = template;
+    while let Some(start) = remaining.find("{%") {
+        remaining = &remaining[start + 2..];
+        let Some(end) = remaining.find("%}") else {
+            break;
+        };
+        let statement = remaining[..end].trim().trim_start_matches(['-', '+']).trim_start();
+        if statement
+            .split_whitespace()
+            .next()
+            .is_some_and(|keyword| matches!(keyword, "include" | "extends" | "import" | "from"))
+        {
+            return true;
+        }
+        remaining = &remaining[end + 2..];
+    }
+    false
+}
+
+fn validate_minijinja_template(template: &str, label: &str) -> Result<()> {
+    if template.is_empty() {
+        return Ok(());
+    }
+    if template.len() > 64 * 1024 {
+        anyhow::bail!("{label} template is too large");
+    }
+    Environment::new()
+        .template_from_str(template)
+        .map(|_| ())
+        .map_err(|err| anyhow::anyhow!("{label} template is invalid: {err}"))
+}
+
+fn is_stable_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(ch) if ch.is_ascii_alphanumeric())
+        && value.len() <= 64
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
 }
 
 fn is_secret_mask(value: &str) -> bool {
@@ -1382,6 +2052,391 @@ fn is_false_bool(value: &bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_snapshot_masks_all_new_notification_secrets() {
+        let data = AdminData {
+            wechat: Some(WechatOverride {
+                corp_secret: "wechat-secret".into(),
+                ..Default::default()
+            }),
+            email: Some(EmailOverride {
+                password: "smtp-secret".into(),
+                ..Default::default()
+            }),
+            webhook: Some(StructuredWebhookOverride {
+                receivers: vec![StructuredWebhookReceiver {
+                    url: "https://hooks.example/secret".into(),
+                    password: "basic-secret".into(),
+                    headers: vec![WebhookHeaderOverride {
+                        name: "Authorization".into(),
+                        value: "Bearer secret".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let public = public_admin_data(&data);
+        let json = serde_json::to_string(&public).unwrap();
+        for secret in [
+            "wechat-secret",
+            "smtp-secret",
+            "hooks.example/secret",
+            "basic-secret",
+            "Bearer secret",
+        ] {
+            assert!(!json.contains(secret));
+        }
+    }
+
+    fn structured_receiver(id: &str) -> StructuredWebhookReceiver {
+        StructuredWebhookReceiver {
+            id: id.into(),
+            name: "Operations".into(),
+            enabled: true,
+            url: "https://hooks.example/private".into(),
+            username: "operator".into(),
+            password: "basic-secret".into(),
+            timeout: 10,
+            headers: vec![WebhookHeaderOverride {
+                name: "Authorization".into(),
+                value: "Bearer private".into(),
+                ..Default::default()
+            }],
+            body_tpl: "{{ event }}".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn new_notification_overrides_round_trip_in_private_storage() {
+        let data = AdminData {
+            wechat: Some(WechatOverride {
+                corp_secret: "wechat-secret".into(),
+                ..Default::default()
+            }),
+            email: Some(EmailOverride {
+                password: "smtp-secret".into(),
+                ..Default::default()
+            }),
+            webhook: Some(StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![structured_receiver("ops-primary")],
+            }),
+            log: Some(LogOverride {
+                enabled: true,
+                tpl: "{{ event }}".into(),
+            }),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&data).unwrap();
+        let decoded: AdminData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.wechat.unwrap().corp_secret, "wechat-secret");
+        assert_eq!(decoded.email.unwrap().password, "smtp-secret");
+        let receiver = &decoded.webhook.unwrap().receivers[0];
+        assert_eq!(receiver.id, "ops-primary");
+        assert_eq!(receiver.url, "https://hooks.example/private");
+        assert_eq!(receiver.headers[0].value, "Bearer private");
+        assert_eq!(decoded.log.unwrap().tpl, "{{ event }}");
+    }
+
+    #[test]
+    fn webhook_secrets_merge_by_receiver_id_and_case_insensitive_header_name() {
+        let current = AdminData {
+            webhook: Some(StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![structured_receiver("ops-primary")],
+            }),
+            ..Default::default()
+        };
+        let mut next_receiver = structured_receiver("ops-primary");
+        next_receiver.url.clear();
+        next_receiver.password = "********".into();
+        next_receiver.headers[0].name = "authorization".into();
+        next_receiver.headers[0].value.clear();
+        let mut next = AdminData {
+            webhook: Some(StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![next_receiver],
+            }),
+            ..Default::default()
+        };
+
+        merge_sensitive_fields(&mut next, &current);
+        normalize_admin_data(&mut next);
+
+        let receiver = &next.webhook.unwrap().receivers[0];
+        assert_eq!(receiver.url, "https://hooks.example/private");
+        assert_eq!(receiver.password, "basic-secret");
+        assert_eq!(receiver.headers[0].value, "Bearer private");
+    }
+
+    #[test]
+    fn new_notification_secrets_support_explicit_clear() {
+        let current = AdminData {
+            wechat: Some(WechatOverride {
+                corp_secret: "wechat-secret".into(),
+                ..Default::default()
+            }),
+            email: Some(EmailOverride {
+                password: "smtp-secret".into(),
+                ..Default::default()
+            }),
+            webhook: Some(StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![structured_receiver("ops-primary")],
+            }),
+            ..Default::default()
+        };
+        let mut receiver = structured_receiver("ops-primary");
+        receiver.clear_url = true;
+        receiver.clear_password = true;
+        receiver.headers[0].clear_value = true;
+        let mut next = AdminData {
+            wechat: Some(WechatOverride {
+                clear_corp_secret: true,
+                ..Default::default()
+            }),
+            email: Some(EmailOverride {
+                clear_password: true,
+                ..Default::default()
+            }),
+            webhook: Some(StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![receiver],
+            }),
+            ..Default::default()
+        };
+
+        merge_sensitive_fields(&mut next, &current);
+        normalize_admin_data(&mut next);
+
+        assert!(next.wechat.unwrap().corp_secret.is_empty());
+        assert!(next.email.unwrap().password.is_empty());
+        let receiver = &next.webhook.unwrap().receivers[0];
+        assert!(receiver.url.is_empty());
+        assert!(receiver.password.is_empty());
+        assert!(receiver.headers[0].value.is_empty());
+    }
+
+    #[test]
+    fn structured_webhook_validation_rejects_unsafe_or_ambiguous_receivers() {
+        let mut data = AdminData {
+            webhook: Some(StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![structured_receiver("bad id")],
+            }),
+            ..Default::default()
+        };
+        assert!(validate_admin_data(&data).is_err());
+
+        let receiver = &mut data.webhook.as_mut().unwrap().receivers[0];
+        receiver.id = "valid-id".into();
+        receiver.url = "ftp://hooks.example/private".into();
+        assert!(validate_admin_data(&data).is_err());
+
+        let receiver = &mut data.webhook.as_mut().unwrap().receivers[0];
+        receiver.url = "https://hooks.example/private".into();
+        receiver.timeout = 61;
+        assert!(validate_admin_data(&data).is_err());
+
+        let receiver = &mut data.webhook.as_mut().unwrap().receivers[0];
+        receiver.timeout = 5;
+        receiver.headers.push(WebhookHeaderOverride {
+            name: "authorization".into(),
+            value: "duplicate".into(),
+            ..Default::default()
+        });
+        assert!(validate_admin_data(&data).is_err());
+
+        let receiver = &mut data.webhook.as_mut().unwrap().receivers[0];
+        receiver.headers.pop();
+        receiver.body_tpl = "{% if %}".into();
+        assert!(validate_admin_data(&data).is_err());
+    }
+
+    #[test]
+    fn email_and_log_validation_rejects_invalid_values() {
+        let mut data = AdminData {
+            email: Some(EmailOverride {
+                username: "not-an-email".into(),
+                to: "valid@example.com; invalid".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_admin_data(&data).is_err());
+
+        data.email = None;
+        data.log = Some(LogOverride {
+            enabled: true,
+            tpl: "{% include '../secret' %}".into(),
+        });
+        assert!(validate_admin_data(&data).is_err());
+
+        data.log.as_mut().unwrap().tpl = "{%   include '../secret' %}".into();
+        assert!(validate_admin_data(&data).is_err());
+    }
+
+    #[test]
+    fn invalid_replacement_does_not_mutate_previous_settings() {
+        let current = AdminData {
+            email: Some(EmailOverride {
+                username: "valid@example.com".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let invalid = AdminData {
+            email: Some(EmailOverride {
+                username: "invalid".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(prepare_replacement(invalid, &current).is_err());
+        assert_eq!(current.email.unwrap().username, "valid@example.com");
+    }
+
+    #[test]
+    fn effective_configs_merge_base_with_admin_overrides() {
+        let data = AdminData {
+            wechat: Some(WechatOverride {
+                enabled: true,
+                corp_id: "admin-corp".into(),
+                ..Default::default()
+            }),
+            email: Some(EmailOverride {
+                enabled: true,
+                subject: "Admin subject".into(),
+                ..Default::default()
+            }),
+            log: Some(LogOverride {
+                enabled: true,
+                tpl: "{{ event }}".into(),
+            }),
+            ..Default::default()
+        };
+        let base_wechat = notifier::wechat::Config {
+            corp_id: "base-corp".into(),
+            corp_secret: "base-secret".into(),
+            agent_id: "1001".into(),
+            ..Default::default()
+        };
+        let base_email = notifier::email::Config {
+            server: "smtp.example.com".into(),
+            username: "sender@example.com".into(),
+            password: "base-password".into(),
+            to: "ops@example.com".into(),
+            subject: "Base subject".into(),
+            ..Default::default()
+        };
+        let base_log = notifier::log::Config {
+            enabled: false,
+            log_dir: "/legacy/logs".into(),
+            tpl: "legacy".into(),
+        };
+
+        let wechat = effective_wechat_config_from_data(&data, &base_wechat);
+        let email = effective_email_config_from_data(&data, &base_email);
+        let log = effective_log_config_from_data(&data, &base_log);
+
+        assert!(wechat.enabled);
+        assert_eq!(wechat.corp_id, "admin-corp");
+        assert_eq!(wechat.corp_secret, "base-secret");
+        assert_eq!(email.subject, "Admin subject");
+        assert_eq!(email.password, "base-password");
+        assert!(log.enabled);
+        assert_eq!(log.log_dir, ADMIN_NOTIFICATION_LOG_DIR);
+        assert_eq!(log.tpl, "{{ event }}");
+
+        assert_eq!(effective_wechat_config(&base_wechat).corp_id, "base-corp");
+        assert_eq!(effective_email_config(&base_email).subject, "Base subject");
+        assert_eq!(effective_log_config(&base_log).log_dir, "/legacy/logs");
+    }
+
+    #[test]
+    fn effective_webhook_preserves_legacy_until_admin_override_exists() {
+        let legacy = notifier::webhook::Config {
+            enabled: true,
+            receiver: vec![notifier::webhook::Receiver {
+                enabled: true,
+                url: "https://legacy.example/hook".into(),
+                timeout: 5,
+                script: "[true, #{}]".into(),
+                ..Default::default()
+            }],
+        };
+
+        assert!(matches!(
+            effective_webhook_override_from_data(&AdminData::default(), &legacy),
+            EffectiveWebhookConfig::Legacy(_)
+        ));
+        assert!(matches!(
+            effective_webhook_override(&legacy),
+            EffectiveWebhookConfig::Legacy(_)
+        ));
+
+        let data = AdminData {
+            webhook: Some(StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![structured_receiver("ops-primary")],
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            effective_webhook_override_from_data(&data, &legacy),
+            EffectiveWebhookConfig::Structured(_)
+        ));
+    }
+
+    #[test]
+    fn configured_notification_methods_returns_all_six_ready_methods() {
+        let mut cfg: crate::config::Config = toml::from_str("").unwrap();
+        cfg.tgbot.enabled = true;
+        cfg.tgbot.bot_token = "token".into();
+        cfg.tgbot.chat_id = "chat".into();
+        cfg.bark.enabled = true;
+        cfg.bark.device_key = "device".into();
+        cfg.wechat.enabled = true;
+        cfg.wechat.corp_id = "corp".into();
+        cfg.wechat.corp_secret = "secret".into();
+        cfg.wechat.agent_id = "1001".into();
+        cfg.email.enabled = true;
+        cfg.email.server = "smtp.example.com".into();
+        cfg.email.username = "sender@example.com".into();
+        cfg.email.password = "password".into();
+        cfg.email.to = "ops@example.com".into();
+        cfg.log.enabled = true;
+        cfg.log.log_dir = "/legacy/logs".into();
+        cfg.log.tpl = "{{ event }}".into();
+
+        let data = AdminData {
+            webhook: Some(StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![structured_receiver("ops-primary")],
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_notification_methods_from_data(&data, &cfg),
+            ["tg", "bark", "wechat", "email", "webhook", "log"]
+        );
+        assert_eq!(configured_notification_methods(&cfg).len(), 5);
+
+        cfg.email.username = "not-an-email".into();
+        assert!(!configured_notification_methods_from_data(&data, &cfg)
+            .iter()
+            .any(|method| method == "email"));
+    }
 
     #[test]
     fn admin_password_hash_round_trips() {
