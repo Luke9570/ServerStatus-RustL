@@ -48,7 +48,7 @@ group_gc = 30
 # !!! 一键部署如果没问题则不需要动，Server 会自行根据你的域名生成 server_url
 # 修正一键部署，请自行替换 ssr.rs 为你的域名,
 # server_url = "https://example.invalid/report"
-# stat_client 默认安装的路径；运行时状态保存在 ${workspace}/runtime-state.json。
+# stat_client 默认安装的路径；运行时状态保存在服务器工作目录的 stats snapshot 旁，默认 Compose 路径为 /data/runtime-state.json（对应 ./runtime:/data）。
 workspace = "/opt/ServerStatus"
 
 # 不开启告警，可忽略后面配置，或者删除不需的通知方式
