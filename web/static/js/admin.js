@@ -1,4 +1,19 @@
-(function () {
+function createSettingsTransactionQueue() {
+  let tail = Promise.resolve();
+  return function enqueue(transaction) {
+    const queued = tail.then(transaction, transaction);
+    tail = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  };
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { createSettingsTransactionQueue };
+} else {
+  (function () {
   const tokenKey = "ssr_admin_token";
   const adminThemeKey = "ssr_admin_theme";
   const homepageThemeKey = "chakra-ui-color-mode";
@@ -100,7 +115,7 @@
   ];
   const permanentValues = new Set(["0000-00-00", "never", "permanent", "lifetime", "forever"]);
   const freeValues = new Set(["0", "free", "免费", "免費"]);
-  let settingsWriteQueue = Promise.resolve();
+  const enqueueSettingsWrite = createSettingsTransactionQueue();
 
   function ensureSettings() {
     const settings = state.settings || {};
@@ -483,15 +498,6 @@
     );
   }
 
-  function enqueueSettingsWrite(write) {
-    const queued = settingsWriteQueue.then(write, write);
-    settingsWriteQueue = queued.then(
-      () => undefined,
-      () => undefined,
-    );
-    return queued;
-  }
-
   async function postSettings(payload) {
     const response = await fetch("/api/admin/settings", {
       method: "POST",
@@ -519,47 +525,55 @@
       markClean = true,
       preserveState = false,
       mergeSavedState = null,
+      completeTransaction = null,
+      failureMessage = null,
     } = options;
     setButtonBusy(busyButton, true);
     try {
       const responsePayload = await enqueueSettingsWrite(async () => {
-        const payload = typeof payloadBuilder === "function" ? await payloadBuilder() : payloadBuilder;
-        const saved = await postSettings(payload);
-        if (preserveState) {
-          mergeSavedState?.(saved.data || {});
-        } else {
-          hydrateSettings(saved.data || {});
+        let saved = false;
+        try {
+          const payload = typeof payloadBuilder === "function" ? await payloadBuilder() : payloadBuilder;
+          saved = await postSettings(payload);
+          if (preserveState) {
+            mergeSavedState?.(saved.data || {});
+          } else {
+            hydrateSettings(saved.data || {});
+          }
+          await completeTransaction?.(saved.data || {});
+          if (!preserveState) {
+            await refreshStatsForRender(render);
+            if (render === "all") {
+              renderAll();
+            } else if (render === "tables") {
+              renderTables();
+            } else if (render === "notifications") {
+              renderNotifications();
+              renderAlertRules();
+            } else if (render === "settings") {
+              renderSettings();
+            }
+          }
+          if (markClean) {
+            markPristine("");
+          }
+          text(messageTarget, successMessage);
+          showToast(successMessage);
+          return saved;
+        } catch (err) {
+          if (err.authExpired) {
+            setView("login");
+            text("#login-message", "登录已过期，请重新登录");
+          }
+          const message = failureMessage
+            ? failureMessage(err, { saved: Boolean(saved) })
+            : `保存失败: ${err.message}`;
+          text(messageTarget, message);
+          showToast(message, "warn");
+          return false;
         }
-        return saved;
       });
-      if (!preserveState) {
-        await refreshStatsForRender(render);
-        if (render === "all") {
-          renderAll();
-        } else if (render === "tables") {
-          renderTables();
-        } else if (render === "notifications") {
-          renderNotifications();
-          renderAlertRules();
-        } else if (render === "settings") {
-          renderSettings();
-        }
-      }
-      if (markClean) {
-        markPristine("");
-      }
-      text(messageTarget, successMessage);
-      showToast(successMessage);
-      return responsePayload.data || {};
-    } catch (err) {
-      if (err.authExpired) {
-        setView("login");
-        text("#login-message", "登录已过期，请重新登录");
-      }
-      const message = `保存失败: ${err.message}`;
-      text(messageTarget, message);
-      showToast(message, "warn");
-      return false;
+      return responsePayload ? responsePayload.data || {} : false;
     } finally {
       setButtonBusy(busyButton, false);
     }
@@ -2974,22 +2988,23 @@
     }
     setSaveBusy(true, "保存中...");
     try {
-      const responsePayload = await enqueueSettingsWrite(async () => {
-        const saved = await postSettings(settingsPayloadFromState());
-        hydrateSettings(saved.data || {});
-        return saved;
+      await enqueueSettingsWrite(async () => {
+        try {
+          const saved = await postSettings(settingsPayloadFromState());
+          hydrateSettings(saved.data || {});
+          await refreshStatsForRender("all");
+          renderAll();
+          markPristine("已同步到后端");
+          showToast("配置已保存并同步到后端");
+        } catch (err) {
+          if (err.authExpired) {
+            setView("login");
+            text("#login-message", "登录已过期，请重新登录");
+          }
+          markDirty(`保存失败: ${err.message}`);
+          showToast(`保存失败: ${err.message}`, "warn");
+        }
       });
-      await refreshStatsForRender("all");
-      renderAll();
-      markPristine("已同步到后端");
-      showToast("配置已保存并同步到后端");
-    } catch (err) {
-      if (err.authExpired) {
-        setView("login");
-        text("#login-message", "登录已过期，请重新登录");
-      }
-      markDirty(`保存失败: ${err.message}`);
-      showToast(`保存失败: ${err.message}`, "warn");
     } finally {
       state.saving = false;
       updateSaveButton();
@@ -3048,47 +3063,47 @@
     }
   }
 
-  async function saveNotificationModule(scope, key, value, label) {
-    const ok = await saveScopedSettings({ [key]: value }, {
-      successMessage: `${label} 已同步到后端`,
+  function notificationTransactionOptions(scope, successMessage, reloadFailureMessage, busyButton) {
+    return {
+      successMessage,
       messageTarget: `#${scope}-save-message`,
       render: "none",
-      busyButton: localButton(scope),
-    });
-    if (!ok) {
-      return;
-    }
-    try {
-      await reloadNotificationState(scope);
-      resetLocalBaseline(scope, `${label} 已同步到后端`);
-    } catch (err) {
-      const message = `${label} 已保存，但重新加载失败: ${err.message}`;
-      text(localMessage(scope), message);
-      showToast(message, "warn");
-    }
+      busyButton,
+      completeTransaction: async () => {
+        await reloadNotificationState(scope);
+        resetLocalBaseline(scope, successMessage);
+      },
+      failureMessage: (err, { saved }) => (saved ? `${reloadFailureMessage}: ${err.message}` : `保存失败: ${err.message}`),
+    };
+  }
+
+  async function saveNotificationModule(scope, key, value, label) {
+    const successMessage = `${label} 已同步到后端`;
+    return saveScopedSettings(
+      { [key]: value },
+      notificationTransactionOptions(
+        scope,
+        successMessage,
+        `${label} 已保存，但重新加载失败`,
+        localButton(scope),
+      ),
+    );
   }
 
   async function resetNotificationOverride(scope, key, label) {
     if (!window.confirm(`确定还原 ${label} 为配置文件中的设置？这只会删除该通知方式的后台覆盖配置。`)) {
       return;
     }
-    const ok = await saveScopedSettings({ [key]: null }, {
-      successMessage: `${label} 已还原为配置文件设置`,
-      messageTarget: `#${scope}-save-message`,
-      render: "none",
-      busyButton: $(`#${scope}-reset`),
-    });
-    if (!ok) {
-      return;
-    }
-    try {
-      await reloadNotificationState(scope);
-      resetLocalBaseline(scope, `${label} 已还原为配置文件设置`);
-    } catch (err) {
-      const message = `${label} 已还原，但重新加载失败: ${err.message}`;
-      text(localMessage(scope), message);
-      showToast(message, "warn");
-    }
+    const successMessage = `${label} 已还原为配置文件设置`;
+    return saveScopedSettings(
+      { [key]: null },
+      notificationTransactionOptions(
+        scope,
+        successMessage,
+        `${label} 已还原，但重新加载失败`,
+        $(`#${scope}-reset`),
+      ),
+    );
   }
 
   async function testNotification(
@@ -3599,4 +3614,5 @@
   } else {
     setView("login");
   }
-})();
+  })();
+}

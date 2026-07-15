@@ -227,12 +227,12 @@ mod tests {
         }
 
         let queued_write = admin_js
-            .split("function enqueueSettingsWrite")
+            .split("function createSettingsTransactionQueue")
             .nth(1)
-            .and_then(|section| section.split("async function postSettings").next())
+            .and_then(|section| section.split("if (typeof module").next())
             .expect("shared settings write queue");
         assert!(
-            queued_write.contains("settingsWriteQueue.then(write, write)"),
+            queued_write.contains("tail.then(transaction, transaction)"),
             "settings replacements must share one failure-tolerant serialization queue"
         );
 
@@ -243,8 +243,21 @@ mod tests {
             .expect("shared settings save helper");
         assert!(
             shared_save.contains("await enqueueSettingsWrite(async () => {")
-                && shared_save.contains("mergeSavedState?.(saved.data || {})"),
-            "scoped response state must merge before the queued turn is released"
+                && shared_save.contains("mergeSavedState?.(saved.data || {})")
+                && shared_save.contains("await completeTransaction?.(saved.data || {})")
+                && shared_save.contains("text(messageTarget, successMessage)"),
+            "scoped merge, completion, and feedback must finish before the queued turn is released"
+        );
+
+        let notification_completion = admin_js
+            .split("function notificationTransactionOptions")
+            .nth(1)
+            .and_then(|section| section.split("async function saveNotificationModule").next())
+            .expect("notification transaction completion");
+        assert!(
+            notification_completion.contains("await reloadNotificationState(scope)")
+                && notification_completion.contains("resetLocalBaseline(scope, successMessage)"),
+            "notification refresh, render, and baseline must complete in the shared queued turn"
         );
 
         let scoped_save = admin_js
