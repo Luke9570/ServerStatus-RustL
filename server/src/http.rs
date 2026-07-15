@@ -133,26 +133,8 @@ pub async fn test_admin_notification(
             }
         }
         "bark" => {
-            if let Some(mut override_data) = payload.bark {
-                let mut config = admin::effective_bark_config(&cfg.bark);
-                admin::normalize_bark_override(&mut override_data);
-                config.enabled = override_data.enabled;
-                override_nonempty_string(&mut config.server, override_data.server);
-                if override_data.clear_device_key {
-                    config.device_key.clear();
-                } else {
-                    override_nonempty_string(&mut config.device_key, override_data.device_key);
-                }
-                override_nonempty_string(&mut config.title, override_data.title);
-                override_nonempty_string(&mut config.group, override_data.group);
-                override_nonempty_string(&mut config.icon, override_data.icon);
-                override_nonempty_string(&mut config.sound, override_data.sound);
-                override_nonempty_string(&mut config.url, override_data.url);
-                override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
-                override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
-                if let Some(timeout) = override_data.timeout {
-                    config.timeout = timeout;
-                }
+            if let Some(override_data) = payload.bark {
+                let config = build_bark_test_config(&admin::effective_bark_config(&cfg.bark), override_data);
                 crate::notifier::bark::test(&config).await
             } else {
                 crate::notifier::test_effective_notification("bark", cfg).await
@@ -181,41 +163,20 @@ pub async fn test_admin_notification(
             }
         }
         "email" => {
-            if let Some(mut override_data) = payload.email {
-                let mut config = admin::effective_email_config(&cfg.email);
-                admin::normalize_email_override(&mut override_data);
-                config.enabled = override_data.enabled;
-                override_nonempty_string(&mut config.server, override_data.server);
-                override_nonempty_string(&mut config.username, override_data.username);
-                if override_data.clear_password {
-                    config.password.clear();
-                } else {
-                    override_nonempty_string(&mut config.password, override_data.password);
-                }
-                override_nonempty_string(&mut config.to, override_data.to);
-                override_nonempty_string(&mut config.subject, override_data.subject);
-                override_nonempty_string(&mut config.title, override_data.title);
-                override_nonempty_string(&mut config.online_tpl, override_data.online_tpl);
-                override_nonempty_string(&mut config.offline_tpl, override_data.offline_tpl);
-                override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
-                override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
+            if let Some(override_data) = payload.email {
+                let config = build_email_test_config(&admin::effective_email_config(&cfg.email), override_data);
                 crate::notifier::email::test(&config).await
             } else {
                 crate::notifier::test_effective_notification("email", cfg).await
             }
         }
         "webhook" => {
-            if let Some(mut override_data) = payload.webhook {
+            if let Some(override_data) = payload.webhook {
                 let mut override_config = match admin::effective_webhook_override(&cfg.webhook) {
                     admin::EffectiveWebhookConfig::Structured(config) => config,
                     admin::EffectiveWebhookConfig::Legacy(_) => admin::StructuredWebhookOverride::default(),
                 };
-                admin::normalize_webhook_override(&mut override_data);
-                admin::merge_webhook_secrets(&mut override_data, &override_config);
-                override_config.enabled = override_data.enabled;
-                if !override_data.receivers.is_empty() {
-                    override_config.receivers = override_data.receivers;
-                }
+                override_config = build_structured_webhook_test_config(override_config, override_data);
                 crate::notifier::webhook::test(&admin::EffectiveWebhookConfig::Structured(override_config)).await
             } else {
                 crate::notifier::test_effective_notification("webhook", cfg).await
@@ -252,6 +213,121 @@ fn override_nonempty_string(target: &mut String, value: String) {
     if !value.trim().is_empty() {
         *target = value;
     }
+}
+
+fn same_test_destination(current: &str, requested: &str) -> bool {
+    current.trim() == requested.trim()
+}
+
+fn same_bark_test_destination(current: &str, requested: &str) -> bool {
+    current.trim().trim_end_matches('/') == requested.trim().trim_end_matches('/')
+}
+
+fn build_bark_test_config(
+    base: &crate::notifier::bark::Config,
+    mut override_data: admin::BarkOverride,
+) -> crate::notifier::bark::Config {
+    let mut config = base.clone();
+    admin::normalize_bark_override(&mut override_data);
+    let destination_changed =
+        !override_data.server.is_empty() && !same_bark_test_destination(&config.server, &override_data.server);
+    config.enabled = override_data.enabled;
+    override_nonempty_string(&mut config.server, override_data.server);
+    if override_data.clear_device_key || (destination_changed && override_data.device_key.is_empty()) {
+        config.device_key.clear();
+    } else {
+        override_nonempty_string(&mut config.device_key, override_data.device_key);
+    }
+    override_nonempty_string(&mut config.title, override_data.title);
+    override_nonempty_string(&mut config.group, override_data.group);
+    override_nonempty_string(&mut config.icon, override_data.icon);
+    override_nonempty_string(&mut config.sound, override_data.sound);
+    override_nonempty_string(&mut config.url, override_data.url);
+    override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
+    override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
+    if let Some(timeout) = override_data.timeout {
+        config.timeout = timeout;
+    }
+    config
+}
+
+fn build_email_test_config(
+    base: &crate::notifier::email::Config,
+    mut override_data: admin::EmailOverride,
+) -> crate::notifier::email::Config {
+    let mut config = crate::notifier::email::Config {
+        enabled: base.enabled,
+        server: base.server.clone(),
+        username: base.username.clone(),
+        password: base.password.clone(),
+        to: base.to.clone(),
+        subject: base.subject.clone(),
+        title: base.title.clone(),
+        online_tpl: base.online_tpl.clone(),
+        offline_tpl: base.offline_tpl.clone(),
+        custom_tpl: base.custom_tpl.clone(),
+        expire_tpl: base.expire_tpl.clone(),
+        health_tpl: base.health_tpl.clone(),
+    };
+    admin::normalize_email_override(&mut override_data);
+    let destination_changed =
+        !override_data.server.is_empty() && !same_test_destination(&config.server, &override_data.server);
+    config.enabled = override_data.enabled;
+    override_nonempty_string(&mut config.server, override_data.server);
+    override_nonempty_string(&mut config.username, override_data.username);
+    if override_data.clear_password || (destination_changed && override_data.password.is_empty()) {
+        config.password.clear();
+    } else {
+        override_nonempty_string(&mut config.password, override_data.password);
+    }
+    override_nonempty_string(&mut config.to, override_data.to);
+    override_nonempty_string(&mut config.subject, override_data.subject);
+    override_nonempty_string(&mut config.title, override_data.title);
+    override_nonempty_string(&mut config.online_tpl, override_data.online_tpl);
+    override_nonempty_string(&mut config.offline_tpl, override_data.offline_tpl);
+    override_nonempty_string(&mut config.expire_tpl, override_data.expire_tpl);
+    override_nonempty_string(&mut config.health_tpl, override_data.health_tpl);
+    config
+}
+
+fn build_structured_webhook_test_config(
+    mut stored: admin::StructuredWebhookOverride,
+    mut override_data: admin::StructuredWebhookOverride,
+) -> admin::StructuredWebhookOverride {
+    admin::normalize_webhook_override(&mut override_data);
+    for receiver in &mut override_data.receivers {
+        let Some(previous) = stored.receivers.iter().find(|candidate| candidate.id == receiver.id) else {
+            continue;
+        };
+        let destination_changed =
+            receiver.clear_url || (!receiver.url.is_empty() && !same_test_destination(&previous.url, &receiver.url));
+        if !receiver.clear_url && receiver.url.is_empty() {
+            receiver.url.clone_from(&previous.url);
+            receiver.clear_url = previous.clear_url;
+        }
+        if !destination_changed && !receiver.clear_password && receiver.password.is_empty() {
+            receiver.password.clone_from(&previous.password);
+            receiver.clear_password = previous.clear_password;
+        }
+        for header in &mut receiver.headers {
+            let Some(previous_header) = previous
+                .headers
+                .iter()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(&header.name))
+            else {
+                continue;
+            };
+            if !destination_changed && !header.clear_value && header.value.is_empty() {
+                header.value.clone_from(&previous_header.value);
+                header.clear_value = previous_header.clear_value;
+            }
+        }
+    }
+    stored.enabled = override_data.enabled;
+    if !override_data.receivers.is_empty() {
+        stored.receivers = override_data.receivers;
+    }
+    stored
 }
 
 fn notify_test_ok() -> Response {
@@ -1191,6 +1267,11 @@ fn report_payload_identity(json_data: &Value) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
+    use crate::admin::{
+        BarkOverride, EmailOverride, StructuredWebhookOverride, StructuredWebhookReceiver, WebhookHeaderOverride,
+    };
+    use crate::notifier::NotificationTestError;
+
     #[test]
     fn shell_export_values_are_single_quoted() {
         assert_eq!(super::shell_export_value("plain"), "'plain'");
@@ -1211,5 +1292,280 @@ mod tests {
         let response = super::purge_deleted_hosts_response(Err(anyhow::anyhow!("runtime-state save failed")));
 
         assert_eq!(response.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn changed_bark_test_destination_rejects_a_retained_device_key() {
+        let base = crate::notifier::bark::Config {
+            enabled: true,
+            server: "https://stored.example".into(),
+            device_key: "stored-device-key".into(),
+            ..Default::default()
+        };
+        let override_data = BarkOverride {
+            enabled: true,
+            server: "https://attacker.example".into(),
+            ..Default::default()
+        };
+
+        let config = super::build_bark_test_config(&base, override_data);
+
+        assert!(config.device_key.is_empty());
+        assert_eq!(
+            crate::notifier::bark::test(&config).await,
+            Err(NotificationTestError::InvalidConfiguration)
+        );
+    }
+
+    #[test]
+    fn bark_test_secret_retention_requires_an_unchanged_destination() {
+        let base = crate::notifier::bark::Config {
+            enabled: true,
+            server: "https://stored.example/".into(),
+            device_key: "stored-device-key".into(),
+            ..Default::default()
+        };
+
+        let unchanged = super::build_bark_test_config(
+            &base,
+            BarkOverride {
+                enabled: true,
+                server: "https://stored.example".into(),
+                ..Default::default()
+            },
+        );
+        let replaced = super::build_bark_test_config(
+            &base,
+            BarkOverride {
+                enabled: true,
+                server: "https://new.example".into(),
+                device_key: "new-device-key".into(),
+                ..Default::default()
+            },
+        );
+        let cleared = super::build_bark_test_config(
+            &base,
+            BarkOverride {
+                enabled: true,
+                server: "https://stored.example".into(),
+                clear_device_key: true,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(unchanged.device_key, "stored-device-key");
+        assert_eq!(replaced.device_key, "new-device-key");
+        assert!(cleared.device_key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn changed_smtp_test_destination_rejects_a_retained_password() {
+        let base = crate::notifier::email::Config {
+            enabled: true,
+            server: "smtp.stored.example".into(),
+            username: "sender@example.com".into(),
+            password: "stored-smtp-password".into(),
+            to: "recipient@example.com".into(),
+            ..Default::default()
+        };
+        let override_data = EmailOverride {
+            enabled: true,
+            server: "smtp.attacker.example".into(),
+            ..Default::default()
+        };
+
+        let config = super::build_email_test_config(&base, override_data);
+
+        assert!(config.password.is_empty());
+        assert_eq!(
+            crate::notifier::email::test(&config).await,
+            Err(NotificationTestError::InvalidConfiguration)
+        );
+    }
+
+    #[test]
+    fn smtp_test_secret_retention_requires_an_unchanged_destination() {
+        let base = crate::notifier::email::Config {
+            enabled: true,
+            server: "smtp.stored.example".into(),
+            username: "sender@example.com".into(),
+            password: "stored-smtp-password".into(),
+            to: "recipient@example.com".into(),
+            ..Default::default()
+        };
+
+        let unchanged = super::build_email_test_config(
+            &base,
+            EmailOverride {
+                enabled: true,
+                server: "smtp.stored.example".into(),
+                ..Default::default()
+            },
+        );
+        let replaced = super::build_email_test_config(
+            &base,
+            EmailOverride {
+                enabled: true,
+                server: "smtp.new.example".into(),
+                password: "new-smtp-password".into(),
+                ..Default::default()
+            },
+        );
+        let cleared = super::build_email_test_config(
+            &base,
+            EmailOverride {
+                enabled: true,
+                server: "smtp.stored.example".into(),
+                clear_password: true,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(unchanged.password, "stored-smtp-password");
+        assert_eq!(replaced.password, "new-smtp-password");
+        assert!(cleared.password.is_empty());
+    }
+
+    #[test]
+    fn changed_webhook_test_destination_drops_retained_auth_and_headers() {
+        let stored = StructuredWebhookOverride {
+            enabled: true,
+            receivers: vec![StructuredWebhookReceiver {
+                id: "primary".into(),
+                name: "Stored".into(),
+                enabled: true,
+                url: "https://stored.example/hook".into(),
+                username: "stored-user".into(),
+                password: "stored-basic-password".into(),
+                headers: vec![WebhookHeaderOverride {
+                    name: "Authorization".into(),
+                    value: "stored-header-secret".into(),
+                    ..Default::default()
+                }],
+                body_tpl: "{{ event }}".into(),
+                ..Default::default()
+            }],
+        };
+        let override_data = StructuredWebhookOverride {
+            enabled: true,
+            receivers: vec![StructuredWebhookReceiver {
+                id: "primary".into(),
+                name: "Changed".into(),
+                enabled: true,
+                url: "https://attacker.example/hook".into(),
+                username: "stored-user".into(),
+                headers: vec![WebhookHeaderOverride {
+                    name: "Authorization".into(),
+                    ..Default::default()
+                }],
+                body_tpl: "{{ event }}".into(),
+                ..Default::default()
+            }],
+        };
+
+        let config = super::build_structured_webhook_test_config(stored, override_data);
+        let receiver = &config.receivers[0];
+
+        assert_eq!(receiver.url, "https://attacker.example/hook");
+        assert!(receiver.password.is_empty());
+        assert!(receiver.headers[0].value.is_empty());
+    }
+
+    #[test]
+    fn webhook_test_destination_comparison_preserves_path_trailing_slashes() {
+        let stored = StructuredWebhookOverride {
+            enabled: true,
+            receivers: vec![StructuredWebhookReceiver {
+                id: "primary".into(),
+                url: "https://hooks.example/route".into(),
+                password: "stored-basic-password".into(),
+                headers: vec![WebhookHeaderOverride {
+                    name: "Authorization".into(),
+                    value: "stored-header-secret".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let override_data = StructuredWebhookOverride {
+            enabled: true,
+            receivers: vec![StructuredWebhookReceiver {
+                id: "primary".into(),
+                url: "https://hooks.example/route/".into(),
+                headers: vec![WebhookHeaderOverride {
+                    name: "Authorization".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let config = super::build_structured_webhook_test_config(stored, override_data);
+
+        assert!(config.receivers[0].password.is_empty());
+        assert!(config.receivers[0].headers[0].value.is_empty());
+    }
+
+    #[test]
+    fn unchanged_webhook_test_destination_retains_secrets_and_clear_flags_win() {
+        let stored = StructuredWebhookOverride {
+            enabled: true,
+            receivers: vec![StructuredWebhookReceiver {
+                id: "primary".into(),
+                name: "Stored".into(),
+                enabled: true,
+                url: "https://stored.example/hook".into(),
+                password: "stored-basic-password".into(),
+                headers: vec![WebhookHeaderOverride {
+                    name: "Authorization".into(),
+                    value: "stored-header-secret".into(),
+                    ..Default::default()
+                }],
+                body_tpl: "{{ event }}".into(),
+                ..Default::default()
+            }],
+        };
+        let unchanged = super::build_structured_webhook_test_config(
+            stored.clone(),
+            StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![StructuredWebhookReceiver {
+                    id: "primary".into(),
+                    name: "Stored".into(),
+                    enabled: true,
+                    headers: vec![WebhookHeaderOverride {
+                        name: "authorization".into(),
+                        ..Default::default()
+                    }],
+                    body_tpl: "{{ event }}".into(),
+                    ..Default::default()
+                }],
+            },
+        );
+        let cleared = super::build_structured_webhook_test_config(
+            stored,
+            StructuredWebhookOverride {
+                enabled: true,
+                receivers: vec![StructuredWebhookReceiver {
+                    id: "primary".into(),
+                    name: "Stored".into(),
+                    enabled: true,
+                    clear_password: true,
+                    headers: vec![WebhookHeaderOverride {
+                        name: "Authorization".into(),
+                        clear_value: true,
+                        ..Default::default()
+                    }],
+                    body_tpl: "{{ event }}".into(),
+                    ..Default::default()
+                }],
+            },
+        );
+
+        assert_eq!(unchanged.receivers[0].url, "https://stored.example/hook");
+        assert_eq!(unchanged.receivers[0].password, "stored-basic-password");
+        assert_eq!(unchanged.receivers[0].headers[0].value, "stored-header-secret");
+        assert!(cleared.receivers[0].password.is_empty());
+        assert!(cleared.receivers[0].headers[0].value.is_empty());
     }
 }

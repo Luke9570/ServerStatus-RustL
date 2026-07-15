@@ -42,6 +42,45 @@ pub struct Config {
     pub health_tpl: String,
 }
 
+#[derive(Serialize)]
+struct TemplateConfig<'a> {
+    enabled: bool,
+    corp_id: &'a str,
+    corp_secret: &'static str,
+    agent_id: &'a str,
+    title: &'a str,
+    online_tpl: &'a str,
+    offline_tpl: &'a str,
+    custom_tpl: &'a str,
+    expire_tpl: &'a str,
+    health_tpl: &'a str,
+}
+
+impl<'a> From<&'a Config> for TemplateConfig<'a> {
+    fn from(config: &'a Config) -> Self {
+        Self {
+            enabled: config.enabled,
+            corp_id: &config.corp_id,
+            corp_secret: redacted_template_secret(&config.corp_secret),
+            agent_id: &config.agent_id,
+            title: &config.title,
+            online_tpl: &config.online_tpl,
+            offline_tpl: &config.offline_tpl,
+            custom_tpl: &config.custom_tpl,
+            expire_tpl: &config.expire_tpl,
+            health_tpl: &config.health_tpl,
+        }
+    }
+}
+
+fn redacted_template_secret(value: &str) -> &'static str {
+    if value.is_empty() {
+        ""
+    } else {
+        "[redacted]"
+    }
+}
+
 pub struct WeChat {
     config: &'static Config,
     http_client: reqwest::Client,
@@ -91,11 +130,7 @@ pub(crate) async fn test(config: &Config) -> NotificationTestResult {
     test_with_endpoints(config, TOKEN_URL, SEND_URL).await
 }
 
-async fn test_with_endpoints(
-    config: &Config,
-    token_endpoint: &str,
-    send_endpoint: &str,
-) -> NotificationTestResult {
+async fn test_with_endpoints(config: &Config, token_endpoint: &str, send_endpoint: &str) -> NotificationTestResult {
     validate_test_config(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
     let (data, agent_id) = prepare_delivery(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
     deliver_wechat(
@@ -291,6 +326,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
         Event::Expire => &config.expire_tpl,
         Event::Health => &config.health_tpl,
     };
+    let safe_config = TemplateConfig::from(config);
     let mut environment = minijinja::Environment::new();
     environment
         .add_template("wechat", source)
@@ -298,7 +334,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
     let rendered = environment
         .get_template("wechat")
         .map_err(|_| anyhow!("invalid WeChat template"))?
-        .render(context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info))
+        .render(context!(host => stat, config => safe_config, ip_info => stat.ip_info, sys_info => stat.sys_info))
         .map_err(|_| anyhow!("failed to render WeChat template"))?;
     Ok(rendered
         .lines()
@@ -410,6 +446,22 @@ mod tests {
         ] {
             assert!(!error.contains(secret));
         }
+    }
+
+    #[test]
+    fn wechat_template_config_redacts_corp_secret() {
+        let config = Config {
+            corp_id: "visible-corp-id".into(),
+            corp_secret: "sentinel-corp-secret".into(),
+            agent_id: "visible-agent-id".into(),
+            online_tpl: "{{ config.corp_id }}|{{ config.agent_id }}|{{ config.corp_secret }}".into(),
+            ..Default::default()
+        };
+
+        let rendered = render_content(&config, &Event::NodeUp, &HostStat::default()).unwrap();
+
+        assert_eq!(rendered, "visible-corp-id|visible-agent-id|[redacted]");
+        assert!(!rendered.contains("sentinel-corp-secret"));
     }
 
     #[test]

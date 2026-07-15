@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createSettingsTransactionQueue } = require("./admin.js");
+const { createSettingsTransactionQueue, readSecretInput, updateSecretInputChangeState } = require("./admin.js");
 
 function deferred() {
   let resolve;
@@ -50,4 +50,27 @@ test("settings transactions serialize their complete UI completion", async () =>
     message: "newer saved",
     baseline: "newer",
   });
+});
+
+test("secret inputs preserve whitespace and detect verbatim changes", () => {
+  const input = {
+    value: "  secret with surrounding whitespace\t",
+    dataset: {
+      secretClear: "1",
+      secretConfigured: "1",
+      secretMasked: "0",
+    },
+  };
+
+  assert.equal(readSecretInput(input), "  secret with surrounding whitespace\t");
+  assert.equal(updateSecretInputChangeState(input), true);
+  assert.deepEqual(input.dataset, {
+    secretClear: "0",
+    secretConfigured: "0",
+    secretMasked: "0",
+  });
+
+  assert.equal(readSecretInput({ value: "", dataset: {} }), "");
+  assert.equal(readSecretInput({ value: "••••••••••••", dataset: {} }), "");
+  assert.equal(readSecretInput({ value: "replacement", dataset: { secretMasked: "1" } }), "");
 });

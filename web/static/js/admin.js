@@ -10,14 +10,32 @@ function createSettingsTransactionQueue() {
   };
 }
 
+const secretMask = "••••••••••••";
+
+function readSecretInput(input) {
+  if (!input || input.dataset.secretMasked === "1" || input.value === secretMask) {
+    return "";
+  }
+  return input.value;
+}
+
+function updateSecretInputChangeState(input) {
+  if (!input || input.value === "" || input.value === secretMask) {
+    return false;
+  }
+  input.dataset.secretClear = "0";
+  input.dataset.secretMasked = "0";
+  input.dataset.secretConfigured = "0";
+  return true;
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { createSettingsTransactionQueue };
+  module.exports = { createSettingsTransactionQueue, readSecretInput, updateSecretInputChangeState };
 } else {
   (function () {
   const tokenKey = "ssr_admin_token";
   const adminThemeKey = "ssr_admin_theme";
   const homepageThemeKey = "chakra-ui-color-mode";
-  const secretMask = "••••••••••••";
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -296,14 +314,7 @@ if (typeof module !== "undefined" && module.exports) {
 
   function secretInputValue(selector) {
     const input = $(selector);
-    if (!input) {
-      return "";
-    }
-    const value = input.value.trim();
-    if (input.dataset.secretMasked === "1" || value === secretMask) {
-      return "";
-    }
-    return value;
+    return readSecretInput(input);
   }
 
   function secretClearValue(selector) {
@@ -321,7 +332,7 @@ if (typeof module !== "undefined" && module.exports) {
       updateSecretClearButton(input);
       return;
     }
-    if (input.dataset.secretConfigured === "1" && !input.value.trim()) {
+    if (input.dataset.secretConfigured === "1" && input.value === "") {
       input.value = secretMask;
       input.dataset.secretMasked = "1";
     }
@@ -3486,11 +3497,7 @@ if (typeof module !== "undefined" && module.exports) {
       return;
     }
     if (target instanceof HTMLInputElement && target.classList.contains("secret-input")) {
-      const value = target.value.trim();
-      if (value && value !== secretMask) {
-        target.dataset.secretClear = "0";
-        target.dataset.secretMasked = "0";
-        target.dataset.secretConfigured = "0";
+      if (updateSecretInputChangeState(target)) {
         updateSecretClearButton(target);
       }
     }

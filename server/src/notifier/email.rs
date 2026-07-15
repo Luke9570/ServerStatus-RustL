@@ -39,6 +39,49 @@ pub struct Config {
     pub health_tpl: String,
 }
 
+#[derive(Serialize)]
+struct TemplateConfig<'a> {
+    enabled: bool,
+    server: &'a str,
+    username: &'a str,
+    password: &'static str,
+    to: &'a str,
+    subject: &'a str,
+    title: &'a str,
+    online_tpl: &'a str,
+    offline_tpl: &'a str,
+    custom_tpl: &'a str,
+    expire_tpl: &'a str,
+    health_tpl: &'a str,
+}
+
+impl<'a> From<&'a Config> for TemplateConfig<'a> {
+    fn from(config: &'a Config) -> Self {
+        Self {
+            enabled: config.enabled,
+            server: &config.server,
+            username: &config.username,
+            password: redacted_template_secret(&config.password),
+            to: &config.to,
+            subject: &config.subject,
+            title: &config.title,
+            online_tpl: &config.online_tpl,
+            offline_tpl: &config.offline_tpl,
+            custom_tpl: &config.custom_tpl,
+            expire_tpl: &config.expire_tpl,
+            health_tpl: &config.health_tpl,
+        }
+    }
+}
+
+fn redacted_template_secret(value: &str) -> &'static str {
+    if value.is_empty() {
+        ""
+    } else {
+        "[redacted]"
+    }
+}
+
 pub struct Email {
     config: &'static Config,
 }
@@ -110,8 +153,8 @@ impl crate::notifier::Notifier for Email {
 
 pub(crate) async fn test(config: &Config) -> NotificationTestResult {
     validate_test_config(config).map_err(|_| NotificationTestError::InvalidConfiguration)?;
-    let (mailer, email) = prepare_delivery(config, "❗ServerStatus test msg")
-        .map_err(|_| NotificationTestError::InvalidConfiguration)?;
+    let (mailer, email) =
+        prepare_delivery(config, "❗ServerStatus test msg").map_err(|_| NotificationTestError::InvalidConfiguration)?;
     deliver_email(&mailer, email)
         .await
         .map_err(|()| NotificationTestError::DeliveryFailed)
@@ -155,8 +198,14 @@ fn build_message(config: &Config, html_content: &str) -> Result<Message> {
     let sender = format!("ServerStatus <{}>", config.username)
         .parse::<Mailbox>()
         .map_err(|_| anyhow!("invalid sender address"))?;
-    let recipients = config
+    let normalized_recipients = config
         .to
+        .split([';', ','])
+        .map(str::trim)
+        .filter(|recipient| !recipient.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let recipients = normalized_recipients
         .parse::<Mailboxes>()
         .map_err(|_| anyhow!("invalid recipient addresses"))?;
     let mut builder = Message::builder().subject(config.subject.clone()).from(sender);
@@ -183,6 +232,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
         Event::Expire => &config.expire_tpl,
         Event::Health => &config.health_tpl,
     };
+    let safe_config = TemplateConfig::from(config);
     let mut environment = minijinja::Environment::new();
     environment
         .add_template("email", source)
@@ -190,7 +240,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
     let rendered = environment
         .get_template("email")
         .map_err(|_| anyhow!("invalid email template"))?
-        .render(context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info))
+        .render(context!(host => stat, config => safe_config, ip_info => stat.ip_info, sys_info => stat.sys_info))
         .map_err(|_| anyhow!("failed to render email template"))?;
     Ok(trim_rendered(&rendered))
 }
@@ -229,5 +279,36 @@ mod tests {
         };
 
         assert!(render_content(&config, &Event::NodeUp, &HostStat::default()).is_err());
+    }
+
+    #[test]
+    fn semicolon_separated_recipients_build_a_deliverable_message() {
+        let config = Config {
+            username: "sender@example.com".into(),
+            to: "first@example.com; second@example.com".into(),
+            subject: "Test".into(),
+            ..Default::default()
+        };
+
+        let message = build_message(&config, "test").unwrap();
+        let formatted = String::from_utf8(message.formatted()).unwrap();
+
+        assert!(formatted.contains("To: first@example.com, second@example.com"));
+    }
+
+    #[test]
+    fn email_template_config_redacts_smtp_password() {
+        let config = Config {
+            server: "smtp.visible.example".into(),
+            username: "sender@example.com".into(),
+            password: "sentinel-smtp-password".into(),
+            online_tpl: "{{ config.server }}|{{ config.username }}|{{ config.password }}".into(),
+            ..Default::default()
+        };
+
+        let rendered = render_content(&config, &Event::NodeUp, &HostStat::default()).unwrap();
+
+        assert_eq!(rendered, "smtp.visible.example|sender@example.com|[redacted]");
+        assert!(!rendered.contains("sentinel-smtp-password"));
     }
 }

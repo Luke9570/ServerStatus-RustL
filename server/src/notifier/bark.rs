@@ -73,6 +73,55 @@ pub struct Config {
     pub health_tpl: String,
 }
 
+#[derive(Serialize)]
+struct TemplateConfig<'a> {
+    enabled: bool,
+    server: String,
+    device_key: &'static str,
+    title: &'a str,
+    group: &'a str,
+    icon: &'a str,
+    sound: &'a str,
+    url: &'a str,
+    timeout: u64,
+    online_tpl: &'a str,
+    offline_tpl: &'a str,
+    custom_tpl: &'a str,
+    expire_tpl: &'a str,
+    health_tpl: &'a str,
+}
+
+impl<'a> From<&'a Config> for TemplateConfig<'a> {
+    fn from(config: &'a Config) -> Self {
+        Self {
+            enabled: config.enabled,
+            server: split_server_and_device_key(&config.server)
+                .map(|(server, _)| server)
+                .unwrap_or_else(|| config.server.clone()),
+            device_key: redacted_template_secret(&config.device_key),
+            title: &config.title,
+            group: &config.group,
+            icon: &config.icon,
+            sound: &config.sound,
+            url: &config.url,
+            timeout: config.timeout,
+            online_tpl: &config.online_tpl,
+            offline_tpl: &config.offline_tpl,
+            custom_tpl: &config.custom_tpl,
+            expire_tpl: &config.expire_tpl,
+            health_tpl: &config.health_tpl,
+        }
+    }
+}
+
+fn redacted_template_secret(value: &str) -> &'static str {
+    if value.is_empty() {
+        ""
+    } else {
+        "[redacted]"
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -329,6 +378,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
         Event::Expire => &config.expire_tpl,
         Event::Health => &config.health_tpl,
     };
+    let safe_config = TemplateConfig::from(config);
     let mut environment = minijinja::Environment::new();
     environment
         .add_template("bark", source)
@@ -336,7 +386,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
     let rendered = environment
         .get_template("bark")
         .map_err(|_| anyhow!("invalid Bark template"))?
-        .render(context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info))
+        .render(context!(host => stat, config => safe_config, ip_info => stat.ip_info, sys_info => stat.sys_info))
         .map_err(|_| anyhow!("failed to render Bark template"))?;
     Ok(rendered
         .lines()
@@ -405,6 +455,23 @@ mod tests {
         ] {
             assert_eq!(render_content(&config, &event, &stat).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn bark_template_config_redacts_device_keys() {
+        let config = Config {
+            server: "https://api.day.app/sentinel-embedded-device-key".into(),
+            device_key: "sentinel-device-key".into(),
+            title: "visible-title".into(),
+            online_tpl: "{{ config.title }}|{{ config.server }}|{{ config.device_key }}".into(),
+            ..Default::default()
+        };
+
+        let rendered = render_content(&config, &Event::NodeUp, &HostStat::default()).unwrap();
+
+        assert_eq!(rendered, "visible-title|https://api.day.app|[redacted]");
+        assert!(!rendered.contains("sentinel-embedded-device-key"));
+        assert!(!rendered.contains("sentinel-device-key"));
     }
 
     #[test]

@@ -36,6 +36,43 @@ pub struct Config {
     pub health_tpl: String,
 }
 
+#[derive(Serialize)]
+struct TemplateConfig<'a> {
+    enabled: bool,
+    bot_token: &'static str,
+    chat_id: &'static str,
+    title: &'a str,
+    online_tpl: &'a str,
+    offline_tpl: &'a str,
+    custom_tpl: &'a str,
+    expire_tpl: &'a str,
+    health_tpl: &'a str,
+}
+
+impl<'a> From<&'a Config> for TemplateConfig<'a> {
+    fn from(config: &'a Config) -> Self {
+        Self {
+            enabled: config.enabled,
+            bot_token: redacted_template_secret(&config.bot_token),
+            chat_id: redacted_template_secret(&config.chat_id),
+            title: &config.title,
+            online_tpl: &config.online_tpl,
+            offline_tpl: &config.offline_tpl,
+            custom_tpl: &config.custom_tpl,
+            expire_tpl: &config.expire_tpl,
+            health_tpl: &config.health_tpl,
+        }
+    }
+}
+
+fn redacted_template_secret(value: &str) -> &'static str {
+    if value.is_empty() {
+        ""
+    } else {
+        "[redacted]"
+    }
+}
+
 pub struct TGBot {
     config: &'static Config,
     http_client: reqwest::Client,
@@ -205,6 +242,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
         Event::Expire => &config.expire_tpl,
         Event::Health => &config.health_tpl,
     };
+    let safe_config = TemplateConfig::from(config);
     let mut environment = minijinja::Environment::new();
     environment
         .add_template("telegram", source)
@@ -212,7 +250,7 @@ fn render_content(config: &Config, event: &Event, stat: &HostStat) -> Result<Str
     let rendered = environment
         .get_template("telegram")
         .map_err(|_| anyhow!("invalid Telegram template"))?
-        .render(context!(host => stat, config => config, ip_info => stat.ip_info, sys_info => stat.sys_info))
+        .render(context!(host => stat, config => safe_config, ip_info => stat.ip_info, sys_info => stat.sys_info))
         .map_err(|_| anyhow!("failed to render Telegram template"))?;
     Ok(rendered
         .lines()
@@ -281,6 +319,23 @@ mod tests {
         ] {
             assert_eq!(render_content(&config, &event, &stat).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn telegram_template_config_redacts_credentials() {
+        let config = Config {
+            bot_token: "sentinel-bot-token".into(),
+            chat_id: "sentinel-chat-id".into(),
+            title: "visible-title".into(),
+            online_tpl: "{{ config.title }}|{{ config.bot_token }}|{{ config.chat_id }}".into(),
+            ..Default::default()
+        };
+
+        let rendered = render_content(&config, &Event::NodeUp, &HostStat::default()).unwrap();
+
+        assert_eq!(rendered, "visible-title|[redacted]|[redacted]");
+        assert!(!rendered.contains("sentinel-bot-token"));
+        assert!(!rendered.contains("sentinel-chat-id"));
     }
 
     #[test]
