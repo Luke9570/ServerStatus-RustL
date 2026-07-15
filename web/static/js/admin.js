@@ -100,6 +100,7 @@
   ];
   const permanentValues = new Set(["0000-00-00", "never", "permanent", "lifetime", "forever"]);
   const freeValues = new Set(["0", "free", "免费", "免費"]);
+  let settingsWriteQueue = Promise.resolve();
 
   function ensureSettings() {
     const settings = state.settings || {};
@@ -122,6 +123,12 @@
     }
     settings.notification_groups = [];
     state.settings = settings;
+    return settings;
+  }
+
+  function hydrateSettings(savedSettings) {
+    state.settings = savedSettings || {};
+    const settings = ensureSettings();
     state.deletedHosts = new Set(settings.deleted_hosts || []);
     state.deletedAccessKeys = new Set(settings.deleted_access_keys || []);
     return settings;
@@ -448,7 +455,7 @@
       server_groups: current.server_groups || [],
       access_keys: current.access_keys || {},
       deleted_access_keys: current.deleted_access_keys || [],
-      notification_groups: [],
+      notification_groups: current.notification_groups || [],
       alert_rules: current.alert_rules || [],
       admin_path: current.admin_path || "/admin",
       access_base_url: current.access_base_url || "",
@@ -476,6 +483,15 @@
     );
   }
 
+  function enqueueSettingsWrite(write) {
+    const queued = settingsWriteQueue.then(write, write);
+    settingsWriteQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }
+
   async function postSettings(payload) {
     const response = await fetch("/api/admin/settings", {
       method: "POST",
@@ -494,7 +510,7 @@
     return readJson(response);
   }
 
-  async function saveSettingsPayload(payload, options = {}) {
+  async function saveSettingsPayload(payloadBuilder, options = {}) {
     const {
       successMessage = "已同步到后端",
       messageTarget = "#save-message",
@@ -502,13 +518,21 @@
       busyButton = null,
       markClean = true,
       preserveState = false,
+      mergeSavedState = null,
     } = options;
     setButtonBusy(busyButton, true);
     try {
-      const responsePayload = await postSettings(payload);
+      const responsePayload = await enqueueSettingsWrite(async () => {
+        const payload = typeof payloadBuilder === "function" ? await payloadBuilder() : payloadBuilder;
+        const saved = await postSettings(payload);
+        if (preserveState) {
+          mergeSavedState?.(saved.data || {});
+        } else {
+          hydrateSettings(saved.data || {});
+        }
+        return saved;
+      });
       if (!preserveState) {
-        state.settings = responsePayload.data || {};
-        ensureSettings();
         await refreshStatsForRender(render);
         if (render === "all") {
           renderAll();
@@ -542,29 +566,18 @@
   }
 
   async function saveScopedSettings(overrides, options = {}) {
-    const { messageTarget = "#save-message", busyButton = null } = options;
-    setButtonBusy(busyButton, true);
-    try {
-      const settings = await getJson("/api/admin/settings");
-      const payload = settingsPayloadFromSettings(settings.data || {}, overrides);
-      return await saveSettingsPayload(payload, {
+    return saveSettingsPayload(
+      async () => {
+        const settings = await getJson("/api/admin/settings");
+        return settingsPayloadFromSettings(settings.data || {}, overrides);
+      },
+      {
         ...options,
-        busyButton: null,
         preserveState: true,
         markClean: false,
-      });
-    } catch (err) {
-      if (err.authExpired) {
-        setView("login");
-        text("#login-message", "登录已过期，请重新登录");
-      }
-      const message = `保存失败: ${err.message}`;
-      text(messageTarget, message);
-      showToast(message, "warn");
-      return false;
-    } finally {
-      setButtonBusy(busyButton, false);
-    }
+        mergeSavedState: (savedSettings) => mergeScopedSettings(Object.keys(overrides), savedSettings),
+      },
+    );
   }
 
   function mergeScopedSettings(keys, savedSettings) {
@@ -1650,7 +1663,7 @@
           state.deletedHosts.delete(id);
           state.settings.deleted_hosts = [...state.deletedHosts];
           renderTables();
-          await saveSettingsPayload(settingsPayloadFromState(), {
+          await saveSettingsPayload(() => settingsPayloadFromState(), {
             successMessage: "服务器已恢复并同步到后端",
             render: "tables",
           });
@@ -1670,8 +1683,7 @@
     }
     try {
       const payload = await deleteJson(`/api/admin/deleted-hosts/${encodeURIComponent(id)}`);
-      state.settings = payload.data || {};
-      ensureSettings();
+      hydrateSettings(payload.data || {});
       renderAll();
       showToast(`${id} 已彻底删除，后续上报会重新接入`);
     } catch (err) {
@@ -1692,8 +1704,7 @@
     }
     try {
       const payload = await deleteJson("/api/admin/deleted-hosts");
-      state.settings = payload.data || {};
-      ensureSettings();
+      hydrateSettings(payload.data || {});
       renderAll();
       showToast("已清空已删除服务器，后续上报会重新接入");
     } catch (err) {
@@ -1839,7 +1850,7 @@
     });
     rowMessage(row, "复制中...");
     button.disabled = true;
-    const ok = await saveSettingsPayload(settingsPayloadFromState(), {
+    const ok = await saveSettingsPayload(() => settingsPayloadFromState(), {
       successMessage: `${id} 已复制并同步到后端`,
       render: "tables",
     });
@@ -1873,7 +1884,7 @@
     }));
     rowMessage(row, "同步中...");
     row.remove();
-    const ok = await saveSettingsPayload(settingsPayloadFromState(), {
+    const ok = await saveSettingsPayload(() => settingsPayloadFromState(), {
       successMessage: "服务器已删除并同步到后端",
       render: "tables",
     });
@@ -2500,7 +2511,7 @@
     }
     closeDialog();
     renderTables();
-    await saveSettingsPayload(settingsPayloadFromState(), {
+    await saveSettingsPayload(() => settingsPayloadFromState(), {
       successMessage: message,
       render: "tables",
     });
@@ -2607,7 +2618,7 @@
       }
       closeDialog();
       renderTables();
-      await saveSettingsPayload(settingsPayloadFromState(), {
+      await saveSettingsPayload(() => settingsPayloadFromState(), {
         successMessage: "服务器配置已同步到后端",
         render: "tables",
       });
@@ -2616,7 +2627,7 @@
       applyServerGroupEditor();
       closeDialog();
       renderTables();
-      await saveSettingsPayload(settingsPayloadFromState(), {
+      await saveSettingsPayload(() => settingsPayloadFromState(), {
         successMessage: "服务器分组已同步到后端",
         render: "tables",
       });
@@ -2627,7 +2638,7 @@
       }
       closeDialog();
       renderTables();
-      await saveSettingsPayload(settingsPayloadFromState(), {
+      await saveSettingsPayload(() => settingsPayloadFromState(), {
         successMessage: "告警规则已同步到后端",
         render: "tables",
       });
@@ -2951,8 +2962,7 @@
     ]);
     state.config = config;
     state.stats = stats;
-    state.settings = settings.data || {};
-    ensureSettings();
+    hydrateSettings(settings.data || {});
     renderAll();
     markPristine("");
   }
@@ -2962,12 +2972,13 @@
       text("#save-message", "当前没有需要保存的更改");
       return;
     }
-    const settingsPayload = settingsPayloadFromState();
     setSaveBusy(true, "保存中...");
     try {
-      const responsePayload = await postSettings(settingsPayload);
-      state.settings = responsePayload.data || {};
-      ensureSettings();
+      const responsePayload = await enqueueSettingsWrite(async () => {
+        const saved = await postSettings(settingsPayloadFromState());
+        hydrateSettings(saved.data || {});
+        return saved;
+      });
       await refreshStatsForRender("all");
       renderAll();
       markPristine("已同步到后端");

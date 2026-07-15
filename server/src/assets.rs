@@ -186,4 +186,89 @@ mod tests {
             "notification reload must merge only its saved scope"
         );
     }
+
+    #[test]
+    fn admin_settings_replacements_preserve_legacy_data_and_serialize_writes() {
+        let admin_js = Asset::get("/static/js/admin.js").expect("embedded admin JavaScript");
+        let admin_js = std::str::from_utf8(admin_js.data.as_ref()).expect("UTF-8 admin JavaScript");
+
+        let snapshot_payload = admin_js
+            .split("function settingsPayloadFromSettings")
+            .nth(1)
+            .and_then(|section| section.split("function settingsPayloadFromState").next())
+            .expect("backend snapshot payload helper");
+        assert!(
+            snapshot_payload.contains("notification_groups: current.notification_groups || []"),
+            "whole-settings replacements must preserve legacy notification groups with their dependent rules"
+        );
+
+        let ensure_settings = admin_js
+            .split("function ensureSettings")
+            .nth(1)
+            .and_then(|section| section.split("function hydrateSettings").next())
+            .expect("settings normalization helper");
+        assert!(
+            !ensure_settings.contains("state.deletedAccessKeys ="),
+            "repeated normalization must not overwrite an unsaved access-key deletion draft"
+        );
+        let hydrate_settings = admin_js
+            .split("function hydrateSettings")
+            .nth(1)
+            .and_then(|section| section.split("function snapshotSettingsState").next())
+            .expect("explicit settings hydration helper");
+        for contract in [
+            "state.deletedHosts = new Set(settings.deleted_hosts || [])",
+            "state.deletedAccessKeys = new Set(settings.deleted_access_keys || [])",
+        ] {
+            assert!(
+                hydrate_settings.contains(contract),
+                "explicit server loads must hydrate deletion drafts: {contract}"
+            );
+        }
+
+        let queued_write = admin_js
+            .split("function enqueueSettingsWrite")
+            .nth(1)
+            .and_then(|section| section.split("async function postSettings").next())
+            .expect("shared settings write queue");
+        assert!(
+            queued_write.contains("settingsWriteQueue.then(write, write)"),
+            "settings replacements must share one failure-tolerant serialization queue"
+        );
+
+        let shared_save = admin_js
+            .split("async function saveSettingsPayload")
+            .nth(1)
+            .and_then(|section| section.split("async function saveScopedSettings").next())
+            .expect("shared settings save helper");
+        assert!(
+            shared_save.contains("await enqueueSettingsWrite(async () => {")
+                && shared_save.contains("mergeSavedState?.(saved.data || {})"),
+            "scoped response state must merge before the queued turn is released"
+        );
+
+        let scoped_save = admin_js
+            .split("async function saveScopedSettings")
+            .nth(1)
+            .and_then(|section| section.split("function mergeScopedSettings").next())
+            .expect("scoped settings save helper");
+        assert!(
+            scoped_save.contains("return saveSettingsPayload(")
+                && scoped_save.contains("async () => {")
+                && scoped_save.contains("await getJson(\"/api/admin/settings\")"),
+            "a scoped save must fetch and build its replacement inside its queued turn"
+        );
+
+        let global_save = admin_js
+            .split("async function saveDashboard")
+            .nth(1)
+            .and_then(|section| section.split("async function saveTgbotSettings").next())
+            .expect("global dashboard save helper");
+        assert!(
+            global_save.contains("await enqueueSettingsWrite(async () => {")
+                && global_save.contains("postSettings(settingsPayloadFromState())")
+                && !global_save.contains("const settingsPayload = settingsPayloadFromState()"),
+            "the global save must build its payload only after its queued turn starts"
+        );
+    }
 }
