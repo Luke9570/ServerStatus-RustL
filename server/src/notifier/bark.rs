@@ -6,6 +6,7 @@ use reqwest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::time::Duration;
+use url::Url;
 
 use crate::notifier::{
     redact_secrets, send_with_retry, Event, HostStat, NotificationTestError, NotificationTestResult, NOTIFIER_HANDLE,
@@ -95,9 +96,7 @@ impl<'a> From<&'a Config> for TemplateConfig<'a> {
     fn from(config: &'a Config) -> Self {
         Self {
             enabled: config.enabled,
-            server: split_server_and_device_key(&config.server)
-                .map(|(server, _)| server)
-                .unwrap_or_else(|| config.server.clone()),
+            server: redact_template_server(&config.server),
             device_key: redacted_template_secret(&config.device_key),
             title: &config.title,
             group: &config.group,
@@ -111,6 +110,15 @@ impl<'a> From<&'a Config> for TemplateConfig<'a> {
             expire_tpl: &config.expire_tpl,
             health_tpl: &config.health_tpl,
         }
+    }
+}
+
+fn redact_template_server(server: &str) -> String {
+    match Url::parse(server.trim()) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") && url.host().is_some() => {
+            url.origin().ascii_serialization()
+        }
+        _ => server.to_string(),
     }
 }
 
@@ -472,6 +480,31 @@ mod tests {
         assert_eq!(rendered, "visible-title|https://api.day.app|[redacted]");
         assert!(!rendered.contains("sentinel-embedded-device-key"));
         assert!(!rendered.contains("sentinel-device-key"));
+    }
+
+    #[test]
+    fn bark_template_config_redacts_paths_from_case_insensitive_full_urls() {
+        for (server, expected) in [
+            (
+                "HTTPS://api.day.app/sentinel-embedded-device-key",
+                "https://api.day.app",
+            ),
+            (
+                "hTtPs://bark.example/custom-prefix/sentinel-embedded-device-key",
+                "https://bark.example",
+            ),
+        ] {
+            let config = Config {
+                server: server.into(),
+                online_tpl: "{{ config.server }}".into(),
+                ..Default::default()
+            };
+
+            let rendered = render_content(&config, &Event::NodeUp, &HostStat::default()).unwrap();
+
+            assert_eq!(rendered, expected);
+            assert!(!rendered.contains("sentinel-embedded-device-key"));
+        }
     }
 
     #[test]
