@@ -315,7 +315,7 @@ impl StatsMgr {
                         stat_t.notify = info.notify && stat_t.notify;
                         stat_t.pos = info.pos;
                         stat_t.disabled = info.disabled;
-                        stat_t.weight += info.weight;
+                        stat_t.weight = effective_rank_weight(stat_t.weight, info.weight);
                         if stat_t.gid.is_empty() {
                             stat_t.gid = info.gid.clone();
                         }
@@ -671,10 +671,9 @@ impl StatsMgr {
     pub fn refresh_admin_overrides(&self) {
         if let (Ok(mut hosts_map), Ok(mut stat_map)) = (self.hosts_map.lock(), self.stat_map.lock()) {
             for (name, info) in hosts_map.iter_mut() {
-                let previous_weight = info.weight;
                 crate::admin::apply_host_override(info);
                 if let Some(stat) = stat_map.get_mut(name) {
-                    refresh_cached_stat_from_host(Arc::make_mut(stat), info, previous_weight);
+                    refresh_cached_stat_from_host(Arc::make_mut(stat), info);
                 }
             }
         }
@@ -918,8 +917,7 @@ fn restore_known_hosts(
         if let Some(host) = hosts_map.get_mut(&stat.name) {
             apply_override(host);
             stat.gid = host.gid.clone();
-            let saved_weight = stat.weight;
-            refresh_cached_stat_from_host(&mut stat, host, saved_weight);
+            refresh_cached_stat_from_host(&mut stat, host);
         }
         stat.online4 = false;
         stat.online6 = false;
@@ -1015,11 +1013,19 @@ fn sort_servers(servers: &mut [Arc<HostStat>]) {
     });
 }
 
-fn refresh_cached_stat_from_host(stat: &mut HostStat, info: &Host, previous_weight: u64) {
+fn effective_rank_weight(reported_weight: u64, configured_weight: u64) -> u64 {
+    if configured_weight > 0 {
+        configured_weight
+    } else {
+        reported_weight
+    }
+}
+
+fn refresh_cached_stat_from_host(stat: &mut HostStat, info: &Host) {
     stat.notify = info.notify && stat.notify;
     stat.pos = info.pos;
     stat.disabled = info.disabled;
-    stat.weight = stat.weight.saturating_sub(previous_weight).saturating_add(info.weight);
+    stat.weight = effective_rank_weight(stat.weight, info.weight);
     if stat.gid.is_empty() {
         stat.gid = info.gid.clone();
     }
@@ -1897,7 +1903,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_stat_weight_refreshes_by_host_weight_delta() {
+    fn cached_stat_weight_refreshes_to_configured_weight() {
         let host = Host {
             name: "srv-weight".to_string(),
             alias: "weighted".to_string(),
@@ -1923,9 +1929,9 @@ mod tests {
             ..Default::default()
         };
 
-        refresh_cached_stat_from_host(&mut stat, &host, 10_000);
+        refresh_cached_stat_from_host(&mut stat, &host);
 
-        assert_eq!(stat.weight, 35_000);
+        assert_eq!(stat.weight, 30_000);
         assert_eq!(stat.alias, "weighted");
         assert_eq!(stat.location, "hk");
         assert_eq!(stat.host_type, "kvm");
@@ -1970,6 +1976,16 @@ mod tests {
     }
 
     #[test]
+    fn configured_weight_overrides_the_reported_agent_weight() {
+        assert_eq!(effective_rank_weight(10_000, 10_008), 10_008);
+    }
+
+    #[test]
+    fn reported_agent_weight_is_used_without_a_configured_weight() {
+        assert_eq!(effective_rank_weight(10_008, 0), 10_008);
+    }
+
+    #[test]
     fn cached_stat_cleared_location_and_type_fall_back_to_auto_detection() {
         let host = Host {
             name: "srv-auto".to_string(),
@@ -1990,7 +2006,7 @@ mod tests {
             ..Default::default()
         };
 
-        refresh_cached_stat_from_host(&mut stat, &host, 0);
+        refresh_cached_stat_from_host(&mut stat, &host);
 
         assert_eq!(stat.location, "sg");
         assert_eq!(stat.host_type, "kvm");
