@@ -128,8 +128,8 @@ impl StatsMgr {
         }
     }
 
-    fn load_last_network(hosts_map: &mut HashMap<String, Host>) {
-        let contents = fs::read_to_string("stats.json").unwrap_or_default();
+    fn load_last_network_from_path(stats_snapshot_path: &Path, hosts_map: &mut HashMap<String, Host>) {
+        let contents = fs::read_to_string(stats_snapshot_path).unwrap_or_default();
         if contents.is_empty() {
             return;
         }
@@ -199,11 +199,6 @@ impl StatsMgr {
             *hosts_map_guard = cfg.hosts_map.clone();
         }
 
-        // load last_network_in/out
-        if let Ok(mut hosts_map_guard) = hosts_map_base.lock() {
-            Self::load_last_network(&mut hosts_map_guard);
-        }
-
         let runtime_state = Arc::new(RuntimeStateStore::load_or_import_legacy(
             runtime_state_path_for_stats_snapshot(&self.stats_snapshot_path),
             &self.stats_snapshot_path,
@@ -227,6 +222,10 @@ impl StatsMgr {
                 &crate::admin::deleted_hosts(),
                 crate::admin::apply_host_override,
             );
+        }
+        // Runtime-managed hosts are restored above, so their monthly traffic baselines can be matched too.
+        if let Ok(mut hosts_map_guard) = hosts_map_base.lock() {
+            Self::load_last_network_from_path(&self.stats_snapshot_path, &mut hosts_map_guard);
         }
         self.rebuild_cached_response();
 
@@ -2093,6 +2092,33 @@ mod tests {
         );
 
         assert_eq!(stat_map["srv-group"].gid, "current-group");
+    }
+
+    #[test]
+    fn restores_network_baseline_for_runtime_hosts_after_restart() {
+        let directory = std::env::temp_dir().join(format!("ssr-network-baseline-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let snapshot_path = directory.join("stats.json");
+        std::fs::write(
+            &snapshot_path,
+            r#"{"servers":[{"name":"runtime-host","last_network_in":123,"last_network_out":456}]}"#,
+        )
+        .unwrap();
+        let mut hosts_map = HashMap::from([(
+            "runtime-host".to_string(),
+            Host {
+                name: "runtime-host".to_string(),
+                ..Default::default()
+            },
+        )]);
+
+        StatsMgr::load_last_network_from_path(&snapshot_path, &mut hosts_map);
+
+        let host = hosts_map.get("runtime-host").unwrap();
+        assert_eq!(host.last_network_in, 123);
+        assert_eq!(host.last_network_out, 456);
+        std::fs::remove_file(snapshot_path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]
