@@ -808,14 +808,27 @@ fn collect_alert_events(
             let state = states.entry(key.clone()).or_default();
             if online {
                 state.since = 0;
+                state.last_enqueued_at = 0;
                 continue;
             }
-            if state.since == 0 {
-                state.since = stat.latest_ts;
+            // Count from the time this process first observes the node offline,
+            // not from its last successful report. Old runtime state used the
+            // latter as `since`, so reset that legacy marker on upgrade.
+            if state.since == 0 || state.since <= stat.latest_ts {
+                state.since = now;
             }
-            if stat.latest_ts + rule.duration < now
+            if now.saturating_sub(state.since) >= rule.duration
                 && (state.last_enqueued_at == 0 || state.last_enqueued_at + rule.repeat_interval < now)
             {
+                info!(
+                    "health alert queued: host={}, rule={}, metric=offline, duration={}s, offline_since={}, last_report={}, now={}",
+                    stat.name,
+                    rule.id,
+                    rule.duration,
+                    state.since,
+                    stat.latest_ts,
+                    now,
+                );
                 events.push(AlertEvent {
                     key,
                     stat: stat_with_custom(stat, offline_alert_message(stat, rule.duration)),
@@ -1436,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn unrestricted_offline_rule_routes_only_selected_bark() {
+    fn unrestricted_offline_rule_waits_then_routes_only_selected_bark() {
         let stat = HostStat {
             name: "pve".into(),
             latest_ts: 100,
@@ -1454,10 +1467,105 @@ mod tests {
             ..Default::default()
         };
 
-        let events = collect_alert_events(&stat, 131, &[rule], &[], &mut HashMap::new());
+        let mut states = HashMap::new();
+        assert!(collect_alert_events(&stat, 101, &[rule.clone()], &[], &mut states).is_empty());
+        let events = collect_alert_events(&stat, 131, &[rule], &[], &mut states);
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].notification_methods, vec!["bark"]);
+    }
+
+    #[test]
+    fn offline_alert_waits_full_duration_after_offline_is_first_observed() {
+        let stat = HostStat {
+            name: "pve".into(),
+            latest_ts: 100,
+            notify: true,
+            online4: false,
+            online6: false,
+            ..Default::default()
+        };
+        let rule = crate::admin::AlertRuleOverride {
+            id: "offline-all".into(),
+            metric: "offline".into(),
+            duration: 300,
+            repeat_interval: 3600,
+            notifications: vec!["bark".into()],
+            ..Default::default()
+        };
+        let mut states = HashMap::new();
+
+        assert!(collect_alert_events(&stat, 130, &[rule.clone()], &[], &mut states).is_empty());
+        assert_eq!(states["pve:offline-all"].since, 130);
+        assert!(collect_alert_events(&stat, 429, &[rule.clone()], &[], &mut states).is_empty());
+
+        assert_eq!(collect_alert_events(&stat, 430, &[rule], &[], &mut states).len(), 1);
+    }
+
+    #[test]
+    fn offline_alert_resets_legacy_last_report_state_on_upgrade() {
+        let stat = HostStat {
+            name: "pve".into(),
+            latest_ts: 100,
+            notify: true,
+            online4: false,
+            online6: false,
+            ..Default::default()
+        };
+        let rule = crate::admin::AlertRuleOverride {
+            id: "offline-all".into(),
+            metric: "offline".into(),
+            duration: 300,
+            repeat_interval: 3600,
+            notifications: vec!["bark".into()],
+            ..Default::default()
+        };
+        let mut states = HashMap::from([(
+            "pve:offline-all".into(),
+            AlertState {
+                since: stat.latest_ts,
+                ..Default::default()
+            },
+        )]);
+
+        assert!(collect_alert_events(&stat, 130, &[rule], &[], &mut states).is_empty());
+        assert_eq!(states["pve:offline-all"].since, 130);
+    }
+
+    #[test]
+    fn offline_alert_recovery_resets_repeat_interval_for_a_new_outage() {
+        let mut stat = HostStat {
+            name: "pve".into(),
+            latest_ts: 100,
+            notify: true,
+            online4: false,
+            online6: false,
+            ..Default::default()
+        };
+        let rule = crate::admin::AlertRuleOverride {
+            id: "offline-all".into(),
+            metric: "offline".into(),
+            duration: 30,
+            repeat_interval: 3600,
+            notifications: vec!["bark".into()],
+            ..Default::default()
+        };
+        let mut states = HashMap::from([(
+            "pve:offline-all".into(),
+            AlertState {
+                since: 100,
+                last_enqueued_at: 130,
+            },
+        )]);
+
+        stat.online4 = true;
+        collect_alert_events(&stat, 131, &[rule.clone()], &[], &mut states);
+        assert_eq!(states["pve:offline-all"], AlertState::default());
+
+        stat.online4 = false;
+        stat.latest_ts = 132;
+        assert!(collect_alert_events(&stat, 163, &[rule.clone()], &[], &mut states).is_empty());
+        assert_eq!(collect_alert_events(&stat, 193, &[rule], &[], &mut states).len(), 1);
     }
 
     #[test]
