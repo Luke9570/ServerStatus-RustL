@@ -2419,12 +2419,14 @@ if (typeof module !== "undefined" && module.exports) {
     const repeat = input("js-rule-repeat", rule.repeat_interval || 3600, "number");
     repeat.min = "60";
     repeat.step = "1";
+    const repeatField = field("重复间隔秒", repeat);
+    repeatField.classList.add("js-rule-repeat-field");
     grid.append(
       field("名称", input("js-rule-name", rule.name || "")),
       field("类型", select(metricOptions, rule.metric || "offline", "js-rule-metric")),
       field("阈值", threshold),
       field("持续秒", duration),
-      field("重复间隔秒", repeat),
+      repeatField,
       field("启用", enabled, "checkbox-field"),
     );
     $("#editor-body").append(
@@ -2447,8 +2449,10 @@ if (typeof module !== "undefined" && module.exports) {
   function syncRuleEditorControls() {
     const threshold = $(".js-rule-threshold");
     const thresholdLabel = threshold?.closest("label");
+    const repeat = $(".js-rule-repeat");
+    const repeatLabel = repeat?.closest("label");
     const offline = $(".js-rule-metric").value === "offline";
-    if (!threshold) {
+    if (!threshold || !repeat) {
       return;
     }
     if (offline) {
@@ -2468,6 +2472,24 @@ if (typeof module !== "undefined" && module.exports) {
         threshold.value = threshold.dataset.savedValue;
       }
       thresholdLabel?.classList.remove("is-disabled");
+    }
+    if (offline) {
+      repeat.disabled = false;
+      repeat.placeholder = "";
+      if (!repeat.value && repeat.dataset.savedValue) {
+        repeat.value = repeat.dataset.savedValue;
+      }
+    } else {
+      if (repeat.value) {
+        repeat.dataset.savedValue = repeat.value;
+      }
+      repeat.value = "";
+      repeat.disabled = true;
+      repeat.placeholder = "持续超标仅提醒一次";
+    }
+    repeatLabel?.classList.toggle("is-disabled", !offline);
+    if (repeatLabel?.firstChild) {
+      repeatLabel.firstChild.textContent = offline ? "重复间隔秒" : "重复提醒";
     }
   }
 
@@ -2494,7 +2516,7 @@ if (typeof module !== "undefined" && module.exports) {
       durationInput.reportValidity();
       return false;
     }
-    if (!repeatInput.checkValidity()) {
+    if (!repeatInput.disabled && !repeatInput.checkValidity()) {
       repeatInput.reportValidity();
       return false;
     }

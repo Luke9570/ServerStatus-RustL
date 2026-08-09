@@ -44,6 +44,12 @@ struct AlertEvent {
     notification_methods: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoveryRoute {
+    notification_group: String,
+    notification_methods: Vec<String>,
+}
+
 impl NotifyMessage {
     fn new(event: Event, stat: Arc<HostStat>) -> Self {
         Self {
@@ -364,26 +370,37 @@ impl StatsMgr {
 
                         if let Ok(mut host_stat_map) = stat_map.lock() {
                             let is_new_host = !host_stat_map.contains_key(&stat_t.name);
-                            let mut notify_up = false;
+                            let mut recovery_routes = Vec::new();
+                            let mut recovery_state_changed = false;
                             if let Some(pre_stat) = host_stat_map.get(&stat_t.name) {
                                 if stat_t.ip_info.is_none() {
                                     stat_t.ip_info = pre_stat.ip_info.clone();
                                 }
 
                                 if stat_t.notify && (pre_stat.latest_ts + cfg.offline_threshold < stat_t.latest_ts) {
-                                    notify_up = true;
+                                    let alert_rules = crate::admin::effective_alert_rules();
+                                    let server_groups = crate::admin::snapshot().server_groups;
+                                    (recovery_routes, recovery_state_changed) = runtime_state.update_alerts(|alerts| {
+                                        take_offline_recovery_routes(&stat_t, &alert_rules, &server_groups, alerts)
+                                    });
                                 }
                             }
                             fill_auto_location(&mut stat_t);
                             info!("update stat `{stat_t:?}");
                             let arc_stat = Arc::new(stat.into_owned());
-                            if notify_up {
-                                // node up notify
-                                let _ = notifier_tx.send(NotifyMessage::new(Event::NodeUp, Arc::clone(&arc_stat)));
+                            for route in recovery_routes {
+                                let _ = notifier_tx.send(NotifyMessage::with_rule(
+                                    Event::NodeUp,
+                                    Arc::clone(&arc_stat),
+                                    route.notification_group,
+                                    route.notification_methods,
+                                ));
                             }
                             host_stat_map.insert(arc_stat.name.clone(), Arc::clone(&arc_stat));
                             runtime_state.upsert_host(KnownHost::from_stat(&arc_stat));
-                            if should_save_runtime_state(is_new_host, latest_runtime_save_ts, arc_stat.latest_ts) {
+                            if recovery_state_changed
+                                || should_save_runtime_state(is_new_host, latest_runtime_save_ts, arc_stat.latest_ts)
+                            {
                                 match runtime_state.save() {
                                     Ok(SaveResult::Published) => latest_runtime_save_ts = arc_stat.latest_ts,
                                     Ok(SaveResult::Skipped) => {}
@@ -856,9 +873,7 @@ fn collect_alert_events(
             if state.since == 0 {
                 state.since = now;
             }
-            if now.saturating_sub(state.since) >= rule.duration
-                && (state.last_enqueued_at == 0 || state.last_enqueued_at + rule.repeat_interval < now)
-            {
+            if now.saturating_sub(state.since) >= rule.duration && state.last_enqueued_at == 0 {
                 events.push(AlertEvent {
                     key,
                     stat: stat_with_custom(stat, usage_alert_message(stat, rule, current, threshold)),
@@ -868,10 +883,47 @@ fn collect_alert_events(
             }
         } else {
             state.since = 0;
+            state.last_enqueued_at = 0;
         }
     }
 
     events
+}
+
+fn take_offline_recovery_routes(
+    stat: &HostStat,
+    rules: &[crate::admin::AlertRuleOverride],
+    server_groups: &[crate::admin::ServerGroupOverride],
+    states: &mut HashMap<String, AlertState>,
+) -> Vec<RecoveryRoute> {
+    if !stat.notify {
+        return Vec::new();
+    }
+
+    let mut routes = Vec::new();
+    for rule in rules {
+        if rule.metric != "offline" || !alert_rule_applies_to_stat(rule, stat, server_groups) {
+            continue;
+        }
+        let key = format!("{}:{}", stat.name, rule.id);
+        let Some(state) = states.get_mut(&key) else {
+            continue;
+        };
+        let delivered = state.last_enqueued_at != 0;
+        state.since = 0;
+        state.last_enqueued_at = 0;
+        if !delivered {
+            continue;
+        }
+        let route = RecoveryRoute {
+            notification_group: rule.notification_group.clone(),
+            notification_methods: rule.notifications.clone(),
+        };
+        if !routes.contains(&route) {
+            routes.push(route);
+        }
+    }
+    routes
 }
 
 fn alert_rule_applies_to_stat(
@@ -1566,6 +1618,79 @@ mod tests {
         stat.latest_ts = 132;
         assert!(collect_alert_events(&stat, 163, &[rule.clone()], &[], &mut states).is_empty());
         assert_eq!(collect_alert_events(&stat, 193, &[rule], &[], &mut states).len(), 1);
+    }
+
+    #[test]
+    fn recovery_notification_requires_a_delivered_offline_alert() {
+        let stat = HostStat {
+            name: "pve".into(),
+            notify: true,
+            ..Default::default()
+        };
+        let rule = crate::admin::AlertRuleOverride {
+            id: "offline-all".into(),
+            metric: "offline".into(),
+            notifications: vec!["bark".into()],
+            ..Default::default()
+        };
+        let mut pending_states = HashMap::from([(
+            "pve:offline-all".into(),
+            AlertState {
+                since: 100,
+                last_enqueued_at: 0,
+            },
+        )]);
+
+        assert!(take_offline_recovery_routes(&stat, &[rule.clone()], &[], &mut pending_states).is_empty());
+        assert_eq!(pending_states["pve:offline-all"], AlertState::default());
+
+        let mut states = HashMap::from([(
+            "pve:offline-all".into(),
+            AlertState {
+                since: 100,
+                last_enqueued_at: 130,
+            },
+        )]);
+
+        let routes = take_offline_recovery_routes(&stat, &[rule], &[], &mut states);
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].notification_methods, vec!["bark"]);
+        assert_eq!(states["pve:offline-all"], AlertState::default());
+    }
+
+    #[test]
+    fn usage_alert_notifies_once_until_the_metric_recovers() {
+        let mut stat = HostStat {
+            name: "pve".into(),
+            notify: true,
+            cpu: 95.0,
+            online4: true,
+            ..Default::default()
+        };
+        let rule = crate::admin::AlertRuleOverride {
+            id: "cpu-high".into(),
+            metric: "cpu".into(),
+            threshold: Some(90.0),
+            duration: 30,
+            repeat_interval: 60,
+            notifications: vec!["bark".into()],
+            ..Default::default()
+        };
+        let mut states = HashMap::new();
+
+        assert!(collect_alert_events(&stat, 100, &[rule.clone()], &[], &mut states).is_empty());
+        assert_eq!(collect_alert_events(&stat, 130, &[rule.clone()], &[], &mut states).len(), 1);
+        states.get_mut("pve:cpu-high").unwrap().last_enqueued_at = 130;
+        assert!(collect_alert_events(&stat, 200, &[rule.clone()], &[], &mut states).is_empty());
+
+        stat.cpu = 50.0;
+        assert!(collect_alert_events(&stat, 201, &[rule.clone()], &[], &mut states).is_empty());
+        assert_eq!(states["pve:cpu-high"], AlertState::default());
+
+        stat.cpu = 95.0;
+        assert!(collect_alert_events(&stat, 202, &[rule.clone()], &[], &mut states).is_empty());
+        assert_eq!(collect_alert_events(&stat, 232, &[rule], &[], &mut states).len(), 1);
     }
 
     #[test]
